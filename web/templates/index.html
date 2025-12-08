@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>股票财务数据系统 - 增强版</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+    <style>
+        .clickable-row { cursor: pointer; }
+        .clickable-row:hover { background-color: #e2e6ea !important; }
+        #chart-container { height: 500px; width: 100%; }
+        .table-container { height: calc(100vh - 150px); overflow: auto; font-size: 0.9rem; }
+        thead th { position: sticky; top: 0; z-index: 10; background: #f8f9fa !important; white-space: nowrap; padding: 12px 10px; }
+        .sortable-header { cursor: pointer; user-select: none; }
+        .sortable-header:hover { background-color: #e9ecef !important; }
+        .sortable-header::after { content: " ↕"; font-size: 0.7em; color: #aaa; margin-left: 5px; }
+        .table-nowrap td { white-space: nowrap; vertical-align: middle; padding: 8px 15px; }
+        
+        /* 进度条样式 */
+        #progress-container { width: 300px; display: none; }
+    </style>
+</head>
+<body class="bg-light">
+
+<div class="container-fluid py-4 px-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h2 class="h4">📈 港股全维财务数据监控</h2>
+        
+        <div class="d-flex align-items-center">
+            <div id="progress-container" class="me-3">
+                <div class="d-flex justify-content-between small text-muted mb-1">
+                    <span id="progress-msg">正在更新...</span>
+                    <span id="progress-pct">0%</span>
+                </div>
+                <div class="progress" style="height: 8px;">
+                    <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <span class="text-muted small me-3">点击表头排序 / 点击行看图</span>
+            
+            <button id="refreshBtn" onclick="triggerCrawl()" class="btn btn-primary btn-sm">
+                ⚡ 手动刷新数据
+            </button>
+        </div>
+    </div>
+
+    <div class="card shadow-sm">
+        <div class="card-body p-0 table-container">
+            <table class="table table-bordered table-striped table-hover mb-0 table-nowrap" id="stockTable">
+                <thead>
+                    <tr>
+                        <th class="bg-light text-primary">代码</th>
+                        <th class="bg-light text-primary">名称</th>
+                        <th>日期</th>
+                        {% for field in fields %}
+                        <th class="sortable-header" onclick="sortTable({{ loop.index0 + 3 }}, 'numeric')">
+                            {{ field }}
+                        </th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stock in stocks %}
+                    <tr class="clickable-row" onclick="loadChart('{{ stock.code }}')">
+                        <td class="fw-bold">{{ stock.code }}</td>
+                        <td>{{ stock.name }}</td>
+                        <td>{{ stock.date }}</td>
+                        {% for field in fields %}
+                        <td>{{ stock[field] }}</td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<div class="modal fade" id="chartModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="chartTitle">历史趋势分析</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="chart-container"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    // === 核心逻辑 1: 触发爬虫 ===
+    function triggerCrawl() {
+        const btn = document.getElementById('refreshBtn');
+        btn.disabled = true;
+        btn.innerText = "⏳ 正在请求...";
+
+        fetch('/api/trigger_crawl')
+            .then(res => res.json())
+            .then(data => {
+                if(data.success) {
+                    // 启动成功，UI的更新交给 pollingTask 处理
+                    console.log("任务已启动");
+                } else {
+                    alert(data.message);
+                }
+            })
+            .catch(err => {
+                console.error(err);
+                btn.disabled = false;
+                btn.innerText = "⚡ 手动刷新数据";
+            });
+    }
+
+    // === 核心逻辑 2: 轮询进度 ===
+    // 每 1.5 秒检查一次后台状态
+    setInterval(pollStatus, 1500);
+
+    function pollStatus() {
+        fetch('/api/status')
+            .then(res => res.json())
+            .then(data => {
+                const btn = document.getElementById('refreshBtn');
+                const progressContainer = document.getElementById('progress-container');
+                const progressBar = document.getElementById('progress-bar');
+                const progressMsg = document.getElementById('progress-msg');
+                const progressPct = document.getElementById('progress-pct');
+
+                if (data.is_running) {
+                    // === 运行中 ===
+                    btn.disabled = true;
+                    btn.innerText = "🚀 后台更新中...";
+                    btn.classList.remove('btn-primary');
+                    btn.classList.add('btn-secondary');
+
+                    // 显示进度条
+                    progressContainer.style.display = 'block';
+                    
+                    // 计算百分比
+                    let pct = 0;
+                    if (data.total > 0) {
+                        pct = Math.round((data.current / data.total) * 100);
+                    }
+                    
+                    progressBar.style.width = pct + "%";
+                    progressPct.innerText = pct + "%";
+                    progressMsg.innerText = `${data.message} (${data.current}/${data.total})`;
+
+                } else {
+                    // === 空闲中 ===
+                    // 只有当按钮还是禁用状态（说明刚才在跑）时，才恢复，避免闪烁
+                    if (btn.disabled) {
+                        btn.disabled = false;
+                        btn.innerText = "⚡ 手动刷新数据";
+                        btn.classList.remove('btn-secondary');
+                        btn.classList.add('btn-primary');
+                        
+                        // 隐藏进度条前，先显示满格一下
+                        progressBar.style.width = "100%";
+                        progressPct.innerText = "100%";
+                        setTimeout(() => {
+                            progressContainer.style.display = 'none';
+                            // 任务完成后，自动刷新页面以显示最新数据
+                            alert("更新完成！即将刷新页面显示最新数据。");
+                            location.reload(); 
+                        }, 1000);
+                    }
+                }
+            });
+    }
+
+    // === 下面是之前的图表和排序逻辑 (保持不变) ===
+    var myChart = echarts.init(document.getElementById('chart-container'));
+    var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
+    
+    document.getElementById('chartModal').addEventListener('shown.bs.modal', function () {
+        myChart.resize();
+    });
+
+    function loadChart(code) {
+        chartModal.show();
+        myChart.showLoading();
+        fetch(`/api/history/${code}`)
+            .then(response => response.json())
+            .then(data => {
+                myChart.hideLoading();
+                document.getElementById('chartTitle').innerText = `${data.name} (${code}) - 财务历史趋势`;
+                var option = {
+                    tooltip: { trigger: 'axis' },
+                    grid: { left: '5%', right: '5%', bottom: '10%', containLabel: true },
+                    legend: { data: ['PE (市盈率)', 'PEG'] },
+                    xAxis: { type: 'category', data: data.dates },
+                    yAxis: [ { type: 'value', name: 'PE' }, { type: 'value', name: 'PEG', alignTicks: true } ],
+                    series: [
+                        { name: 'PE (市盈率)', type: 'line', data: data.pe, smooth: true },
+                        { name: 'PEG', type: 'line', yAxisIndex: 1, data: data.peg, smooth: true, itemStyle: { color: '#ff6b6b' } }
+                    ]
+                };
+                myChart.setOption(option);
+            })
+            .catch(err => { myChart.hideLoading(); });
+    }
+
+    window.onresize = function() { myChart.resize(); };
+
+    let sortDirection = {};
+    function sortTable(columnIndex, type) {
+        const table = document.getElementById("stockTable");
+        const tbody = table.querySelector("tbody");
+        const rows = Array.from(tbody.querySelectorAll("tr"));
+        const currentDir = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
+        sortDirection[columnIndex] = currentDir;
+
+        rows.sort((rowA, rowB) => {
+            const cellA = rowA.cells[columnIndex].innerText.trim();
+            const cellB = rowB.cells[columnIndex].innerText.trim();
+            if (type === 'numeric') {
+                let valA = cellA === '-' ? -99999999 : parseFloat(cellA.replace(/,/g, ''));
+                let valB = cellB === '-' ? -99999999 : parseFloat(cellB.replace(/,/g, ''));
+                return currentDir === 'asc' ? valA - valB : valB - valA;
+            } else {
+                return currentDir === 'asc' ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+            }
+        });
+        rows.forEach(row => tbody.appendChild(row));
+    }
+</script>
+</body>
+</html>
