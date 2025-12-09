@@ -67,14 +67,19 @@ def recalculate_db_task():
             roa = get_f(['总资产回报率(%)', 'ROA'])
             net_margin = get_f(['销售净利率(%)', '销售净利率'])
 
+            # === 计算逻辑确认 ===
+            # AkShare 数据源通常返回 15.5 代表 15.5%。
+            # PEG = PE / Growth。如果 PE=30, Growth=15(%) -> 30/15 = 2.0。计算正确。
             if "PEG" not in item and pe and growth and growth != 0:
                 item['PEG'] = round(pe / growth, 4)
 
+            # PEGY = PE / (Growth + Yield)。30 / (15+5) = 1.5。计算正确。
             if pe and growth is not None and div_yield is not None:
                 total_return = growth + div_yield
                 if total_return > 0:
                     item['PEGY'] = round(pe / total_return, 4)
             
+            # 彼得林奇值 = Growth + Yield。15+5=20。计算正确。
             if growth is not None and div_yield is not None:
                 item['彼得林奇估值'] = round(growth + div_yield, 2)
             
@@ -118,15 +123,19 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
-# === 核心修改：完整字段配置列表（30个字段全集） ===
+# === 核心修改：为百分比字段添加 suffix: "%" ===
 COLUMN_CONFIG = [
-    # --- 1. 核心估值 (最前) ---
+    # --- 0. 静态信息 ---
+    {
+        "key": "所属行业", "label": "行业", 
+        "desc": "公司所属行业板块", "tip": "按东财/GICS分类"
+    },
+
+    # --- 1. 核心估值 (注：PEG等是比率，不需要%) ---
     {
         "key": "PEG", "label": "PEG", 
         "desc": "市盈率 ÷ 盈利增长率", "tip": "小于 1 低估；大于 2 高估。"
     },
-    
-    # --- 2. 高级分析指标 ---
     {
         "key": "PEGY", "label": "PEGY", 
         "desc": "考虑股息的PEG", "tip": "小于 1 极具吸引力。"
@@ -156,45 +165,59 @@ COLUMN_CONFIG = [
         "desc": "营收 ÷ 总资产", "tip": "越高代表资产利用效率越高。"
     },
 
-    # --- 3. 基础财务字段 (完整恢复) ---
-    # 盈利与资产
+    # --- 2. 成长性 (百分比字段) ---
+    {
+        "key": "基本每股收益同比增长率", "label": "EPS同比%", 
+        "desc": "每股收益同比增长率", "tip": "衡量盈利增长速度", "suffix": "%"
+    },
+    {
+        "key": "营业收入同比增长率", "label": "营收同比%", 
+        "desc": "营业收入同比增长率", "tip": "衡量业务规模扩张速度", "suffix": "%"
+    },
+    {
+        "key": "营业利润率同比增长率", "label": "利润率同比%", 
+        "desc": "营业利润率同比增长率", "tip": "衡量盈利能力变化", "suffix": "%"
+    },
+
+    # --- 3. 基础财务字段 ---
     {"key": "基本每股收益(元)", "label": "EPS(元)", "desc": "", "tip": ""},
     {"key": "每股净资产(元)", "label": "BPS(元)", "desc": "", "tip": ""},
     {"key": "每股经营现金流(元)", "label": "每股现金流", "desc": "", "tip": ""},
     
-    # 估值基础
     {"key": "市盈率", "label": "市盈率(PE)", "desc": "", "tip": ""},
     {"key": "市净率", "label": "市净率(PB)", "desc": "", "tip": ""},
     
-    # 股息分红
-    {"key": "股息率TTM(%)", "label": "股息率%", "desc": "", "tip": ""},
+    {"key": "股息率TTM(%)", "label": "股息率%", "desc": "", "tip": "", "suffix": "%"},
     {"key": "每股股息TTM(港元)", "label": "每股股息", "desc": "", "tip": ""},
-    {"key": "派息比率(%)", "label": "派息比%", "desc": "", "tip": ""},
+    {"key": "派息比率(%)", "label": "派息比%", "desc": "", "tip": "", "suffix": "%"},
     
-    # 营收与利润
     {"key": "营业总收入", "label": "营收", "desc": "", "tip": ""},
-    {"key": "营业总收入滚动环比增长(%)", "label": "营收增长%", "desc": "", "tip": ""},
+    {"key": "营业总收入滚动环比增长(%)", "label": "营收环比%", "desc": "", "tip": "", "suffix": "%"},
     {"key": "净利润", "label": "净利润", "desc": "", "tip": ""},
-    {"key": "净利润滚动环比增长(%)", "label": "净利增长%", "desc": "", "tip": ""},
-    {"key": "销售净利率(%)", "label": "净利率%", "desc": "", "tip": ""},
+    {"key": "净利润滚动环比增长(%)", "label": "净利环比%", "desc": "", "tip": "", "suffix": "%"},
+    {"key": "销售净利率(%)", "label": "净利率%", "desc": "", "tip": "", "suffix": "%"},
     
-    # 回报率 (带专业Tooltip)
     {
         "key": "股东权益回报率(%)", "label": "ROE%", 
-        "desc": "净利润 ÷ 股东权益", "tip": "巴菲特最看重的指标。<br>>15% 优秀；长期>20% 为极品。"
+        "desc": "净利润 ÷ 股东权益", "tip": "巴菲特最看重的指标。<br>>15% 优秀；长期>20% 为极品。", "suffix": "%"
     },
     {
         "key": "总资产回报率(%)", "label": "ROA%", 
-        "desc": "净利润 ÷ 总资产", "tip": "衡量资产综合利用效率。<br>一般行业 >5% 算不错。"
+        "desc": "净利润 ÷ 总资产", "tip": "衡量资产综合利用效率。<br>一般行业 >5% 算不错。", "suffix": "%"
     },
     
-    # 市值与股本结构
     {"key": "总市值(港元)", "label": "总市值", "desc": "", "tip": ""},
     {"key": "港股市值(港元)", "label": "港股市值", "desc": "", "tip": ""},
     {"key": "法定股本(股)", "label": "法定股本", "desc": "", "tip": ""},
     {"key": "已发行股本(股)", "label": "发行股本", "desc": "", "tip": ""},
     {"key": "已发行股本-H股(股)", "label": "H股股本", "desc": "", "tip": ""},
-    {"key": "每手股", "label": "每手股", "desc": "", "tip": ""}
+    {"key": "每手股", "label": "每手股", "desc": "", "tip": ""},
+
+    # --- 4. 简介 ---
+    {
+        "key": "企业简介", "label": "简介", 
+        "desc": "企业业务概要", "tip": "数据来源：雪球"
+    }
 ]
 
 @app.get("/", response_class=HTMLResponse)
@@ -214,7 +237,8 @@ async def read_root(request: Request):
             key = col["key"]
             val = latest.get(key)
             if isinstance(val, (int, float)):
-                stock_item[key] = f"{val:,.2f}"
+                # 这里只转字符串，具体的格式化(加%)交给前端 JS
+                stock_item[key] = val
             else:
                 stock_item[key] = val if val else "-"     
         stocks.append(stock_item)

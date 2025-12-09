@@ -13,7 +13,7 @@
             height: 100%; 
             overflow: hidden; 
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-            background-color: #f5f7fa !important; /* 全局背景微调为淡灰蓝 */
+            background-color: #f5f7fa !important; 
         }
         .main-wrapper { height: 100%; display: flex; flex-direction: column; }
         
@@ -24,7 +24,7 @@
             background-color: #ffffff;
             border-bottom: 1px solid #e1e4e8; 
             z-index: 2000;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.03); /* 增加一点点悬浮感 */
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03); 
         }
 
         /* === 3. 表格容器 === */
@@ -37,103 +37,132 @@
         }
         .table { margin-bottom: 0; }
 
-        /* === 4. 表头美化 (核心修改) === */
+        /* === 4. 表头美化 === */
         thead th { 
             position: sticky; 
             top: 0; 
-            z-index: 1000;
-            /* 背景改为极淡的灰色，区分内容 */
+            z-index: 1000; /* 普通表头层级 */
             background-color: #f8f9fa !important; 
-            /* 底部加粗边框 */
             border-bottom: 2px solid #e9ecef !important;
             border-top: none !important;
             border-left: none !important;
-            border-right: none !important; /* 去除左右边框，更清爽 */
-            padding: 0; 
-            height: 48px; /* 稍微降低高度 */
-            vertical-align: middle;
+            border-right: none !important; 
+            padding: 8px 0; 
+            height: auto;
+            vertical-align: middle; 
             background-clip: padding-box;
-            box-shadow: 0 1px 0 #e9ecef; /* 滚动时的阴影线 */
+            box-shadow: 0 1px 0 #e9ecef;
+            min-width: 100px; 
         }
         
-        /* 表头内容区域 */
-        .th-content {
-            padding: 0 16px; /* 增加左右间距 */
-            display: flex; 
-            align-items: center; 
-            justify-content: space-between;
-            width: 100%; 
-            height: 100%; 
-            cursor: pointer; 
-            position: relative;
-            color: #495057; /* 字体深灰，不要纯黑 */
-            font-weight: 600; /* 半粗体 */
-            font-size: 13px;  /* 字体稍微改小，显得精致 */
-            transition: background-color 0.2s;
-        }
+        /* === 5. 冻结列核心样式 (修复重叠透明问题) === */
         
-        /* 鼠标悬停表头效果 */
-        .th-content:hover { 
-            background-color: #eef1f6; 
-            color: #0d6efd; /* 悬停变蓝 */
+        /* 基础冻结列属性 */
+        .sticky-col {
+            position: sticky !important;
+            z-index: 101; /* 必须高于普通td(auto) */
+            border-bottom: 1px solid #f1f3f5;
         }
 
-        /* === 5. 图标美化 === */
-        /* 排序图标：默认半透明，悬停变实 */
+        /* [核心修复] 强制给数据行的冻结列设置纯白背景，防止透视 */
+        tbody td.sticky-col {
+            background-color: #fff !important; 
+        }
+
+        /* 表头交叉点 (左上角两格) */
+        thead th.sticky-col {
+            z-index: 1002 !important; /* 最高层级 */
+            background-color: #f8f9fa !important; /* 保持表头底色 */
+        }
+
+        /* [核心修复] 鼠标悬停行时，冻结列背景色也要同步变色 (浅蓝) */
+        /* 如果不加这行，悬停时冻结列会保持白色，很难看 */
+        .clickable-row:hover .sticky-col {
+            background-color: #f1f8ff !important;
+        }
+
+        /* 第一列：代码 (靠左 0px) */
+        .col-code {
+            left: 0;
+            width: 90px;
+            min-width: 90px;
+            max-width: 90px;
+            border-right: 1px solid #f1f3f5;
+        }
+
+        /* 第二列：名称 (靠左 90px) */
+        .col-name {
+            left: 90px; /* 紧贴第一列 */
+            width: 120px;
+            min-width: 120px;
+            max-width: 120px;
+            /* 右侧加深一点边框，并在右侧加阴影实现“浮起”感 */
+            border-right: 1px solid #e1e4e8 !important; 
+            box-shadow: 4px 0 8px -4px rgba(0,0,0,0.1); 
+        }
+
+        /* === 6. 表头内容美化 === */
+        .th-content {
+            padding: 0 12px;
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between; 
+            width: 100%; 
+            min-height: 32px;
+            cursor: pointer; 
+            position: relative;
+            color: #495057; 
+            font-weight: 600; 
+            font-size: 13px;  
+            transition: background-color 0.2s;
+        }
+
+        /* 换行控制 */
+        .th-content > span:first-child {
+            display: inline-block;
+            white-space: normal;      
+            min-width: 5em;           
+            max-width: 9.5em;         
+            line-height: 1.35;        
+            text-align: left;
+        }
+        
+        .th-content:hover { 
+            background-color: #eef1f6; 
+            color: #0d6efd; 
+        }
+
+        /* === 7. 图标与交互 === */
         .sort-icon { 
-            font-size: 10px; 
-            color: #adb5bd; 
-            margin-left: 6px; 
-            opacity: 0.5;
-            transition: all 0.2s;
+            font-size: 10px; color: #adb5bd; margin-left: 4px; 
+            opacity: 0.5; transition: all 0.2s; white-space: nowrap; flex-shrink: 0;      
         }
         .th-content:hover .sort-icon { opacity: 1; color: #0d6efd; }
         
-        /* 问号图标：更加低调 */
         .info-icon {
             display: inline-flex; align-items: center; justify-content: center;
             width: 14px; height: 14px; 
             border-radius: 50%; 
-            background-color: rgba(173, 181, 189, 0.3); /* 半透明灰 */
-            color: #6c757d; 
-            font-size: 10px; 
-            margin-left: 5px; 
-            cursor: help;
-            transition: all 0.2s;
+            background-color: rgba(173, 181, 189, 0.3); 
+            color: #6c757d; font-size: 10px; margin-left: 4px; 
+            cursor: help; transition: all 0.2s; flex-shrink: 0; 
         }
-        .info-icon:hover { 
-            background-color: #0d6efd; 
-            color: white; 
-        }
+        .info-icon:hover { background-color: #0d6efd; color: white; }
 
-        /* === 6. 筛选状态高亮 === */
-        /* 当列被筛选时，整个表头变蓝底 */
         .filter-active .th-content { 
-            background-color: #e8f2ff; 
-            color: #0d6efd;
-            border-bottom: 2px solid #0d6efd; /* 底部加深蓝线 */
+            background-color: #e8f2ff; color: #0d6efd; border-bottom: 2px solid #0d6efd; 
         }
         .filter-active .sort-icon { color: #0d6efd; opacity: 1; }
 
-        /* === 7. 高级筛选浮窗 === */
         .filter-popup {
-            display: none; 
-            position: absolute; top: 100%; left: 0;
-            min-width: 220px;
-            background: white;
-            border: 1px solid rgba(0,0,0,0.1); /* 边框更淡 */
-            box-shadow: 0 8px 24px rgba(0,0,0,0.12); /* 投影更柔和 */
-            border-radius: 6px;
-            padding: 16px;
-            z-index: 1050;
-            cursor: default; 
-            font-size: 13px;
+            display: none; position: absolute; top: 100%; left: 0;
+            min-width: 220px; background: white;
+            border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 8px 24px rgba(0,0,0,0.12); 
+            border-radius: 6px; padding: 16px; z-index: 1050; cursor: default; font-size: 13px;
         }
-        thead th:hover .filter-popup, 
-        .filter-popup:hover { display: block; }
+        thead th:hover .filter-popup, .filter-popup:hover { display: block; }
         thead th:last-child .filter-popup { left: auto; right: 0; }
 
-        /* 输入框美化 */
         .filter-input-group { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
         .filter-input { 
             width: 80px; font-size: 13px; padding: 6px; 
@@ -142,22 +171,16 @@
         .filter-input:focus { background: #fff; border-color: #86b7fe; box-shadow: none; }
         .filter-label { font-size: 12px; color: #868e96; margin-bottom: 6px; display: block; font-weight: 500;}
 
-        /* === 8. 数据行美化 === */
         .table-nowrap td { 
-            white-space: nowrap; 
-            vertical-align: middle; 
-            padding: 10px 16px; /* 增加舒适度 */
-            font-size: 13px;    /* 字体统一 */
-            color: #212529;
-            border-bottom: 1px solid #f1f3f5; /* 极淡的分割线 */
+            white-space: nowrap; vertical-align: middle; 
+            padding: 10px 16px; font-size: 13px; color: #212529;
+            border-bottom: 1px solid #f1f3f5; 
         }
         .clickable-row { cursor: pointer; transition: background-color 0.1s; }
-        .clickable-row:hover { background-color: #f1f8ff !important; } /* 悬停色更清爽 */
+        .clickable-row:hover { background-color: #f1f8ff !important; } 
         
-        /* 第一列代码加粗 */
         .fw-bold { font-weight: 600 !important; color: #343a40; }
         
-        /* === 其他 === */
         #chart-container { height: 500px; width: 100%; }
         .tooltip { z-index: 10000 !important; }
     </style>
@@ -200,9 +223,15 @@
         <table class="table table-hover mb-0 table-nowrap" id="stockTable">
             <thead>
                 <tr>
-                    <th style="min-width: 90px;"><div class="th-content" onclick="sortTable('code', 'string')">代码 <span class="sort-icon"></span></div></th>
-                    <th style="min-width: 120px;"><div class="th-content" onclick="sortTable('name', 'string')">名称 <span class="sort-icon"></span></div></th>
-                    <th style="min-width: 100px;"><div class="th-content" onclick="sortTable('date', 'string')">日期 <span class="sort-icon"></span></div></th>
+                    <th class="sticky-col col-code">
+                        <div class="th-content" onclick="sortTable('code', 'string')"><span>代码</span> <span class="sort-icon"></span></div>
+                    </th>
+                    <th class="sticky-col col-name">
+                        <div class="th-content" onclick="sortTable('name', 'string')"><span>名称</span> <span class="sort-icon"></span></div>
+                    </th>
+                    <th style="min-width: 100px;">
+                        <div class="th-content" onclick="sortTable('date', 'string')"><span>日期</span> <span class="sort-icon"></span></div>
+                    </th>
 
                     {% for col in columns %}
                     <th data-key="{{ col.key }}">
@@ -219,7 +248,6 @@
                             </span>
                             <span class="sort-icon"></span>
                         </div>
-
                         <div class="filter-popup" onclick="event.stopPropagation()">
                             <span class="filter-label">筛选 {{ col.label }}:</span>
                             <div class="filter-input-group">
@@ -263,7 +291,6 @@
         [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]')).map(function (el) { return new bootstrap.Tooltip(el, {html: true}); });
     });
 
-    // 渲染函数 (包含 -0.00 修复)
     function renderTable(data) {
         const tbody = document.getElementById('tableBody');
         if(data.length === 0) {
@@ -275,24 +302,37 @@
         const rowsHtml = data.map(stock => {
             const colsHtml = g_columns.map(col => {
                 let val = stock[col.key];
-                if (val !== undefined && val !== null && val !== '-' && val !== '') {
-                    let num = parseFloat(String(val).replace(/,/g, ''));
-                    if (Math.abs(num) < 0.005) {
-                        val = "0.00";
-                    } else {
-                        val = num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                    }
-                    // 给负数加个颜色 (可选)
-                    if (num < 0) val = `<span class="text-danger">${val}</span>`;
-                } else {
-                    val = `<span class="text-muted">-</span>`;
+                if (val === undefined || val === null || val === '-' || val === '') {
+                    return `<td><span class="text-muted">-</span></td>`;
                 }
-                return `<td>${val}</td>`;
+
+                let num = parseFloat(String(val).replace(/,/g, ''));
+                let displayVal = val; 
+                let isNegative = false;
+
+                if (!isNaN(num)) {
+                    isNegative = num < 0;
+                    if (Math.abs(num) < 0.005) {
+                        displayVal = "0.00";
+                    } else {
+                        displayVal = num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    }
+                    if (col.suffix) {
+                        displayVal += col.suffix;
+                    }
+                }
+
+                if (isNegative) {
+                    displayVal = `<span class="text-danger">${displayVal}</span>`;
+                }
+                
+                return `<td>${displayVal}</td>`;
             }).join('');
             
+            // ⚠️ 关键代码：给代码和名称列也加上 sticky-col 类，并对应位置类 col-code / col-name
             return `<tr class="clickable-row" onclick="loadChart('${stock.code}')">
-                <td class="fw-bold ps-4 text-primary">${stock.code}</td>
-                <td class="fw-bold">${stock.name}</td>
+                <td class="sticky-col col-code fw-bold ps-4 text-primary">${stock.code}</td>
+                <td class="sticky-col col-name fw-bold">${stock.name}</td>
                 <td class="text-muted small">${stock.date}</td>
                 ${colsHtml}
             </tr>`;
@@ -302,7 +342,7 @@
         document.getElementById('visibleCount').innerText = data.length;
     }
 
-    // 筛选逻辑
+    // --- 筛选与排序逻辑 (保持不变) ---
     const activeFilters = {}; 
 
     function confirmFilter(btn, colKey) {
@@ -316,8 +356,6 @@
 
         updateHeaderStyle(colKey);
         setTimeout(executeFiltering, 10);
-        // 筛选后自动关闭浮窗（通过模拟点击body关闭，这里简单处理，实际上hover css控制显示）
-        // CSS hover控制下，移开鼠标即消失，体验较好
     }
 
     function clearFilter(btn, colKey) {
@@ -351,7 +389,6 @@
             }
             return true;
         });
-        // 重新应用当前的排序（如果之前有排序的话）
         if(sortState.key) {
              doSort(sortState.key, sortState.type);
         } else {
@@ -359,7 +396,6 @@
         }
     }
 
-    // 排序逻辑
     let sortState = { key: '', dir: 'asc', type: '' };
 
     function sortTable(key, type) {
@@ -367,7 +403,7 @@
         
         if (sortState.key === key) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
         else { sortState.key = key; sortState.dir = 'asc'; }
-        sortState.type = type; // 记录类型方便筛选后重排
+        sortState.type = type; 
         
         const ths = document.querySelectorAll('thead th');
         ths.forEach(th => {
@@ -396,7 +432,7 @@
         });
     }
 
-    // API 交互
+    // --- API 交互与图表 ---
     function triggerRecalculate() {
         if(!confirm("确定补全吗？")) return;
         document.getElementById('recalcBtn').disabled = true;
@@ -430,7 +466,6 @@
         });
     }, 1500);
 
-    // 图表
     var myChart = echarts.init(document.getElementById('chart-container'));
     var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
     document.getElementById('chartModal').addEventListener('shown.bs.modal', () => myChart.resize());
