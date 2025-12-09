@@ -1,81 +1,243 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh" class="h-100">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>股票财务数据系统 - 增强版</title>
+    <title>股票财务数据系统</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
     <style>
-        .clickable-row { cursor: pointer; }
-        .clickable-row:hover { background-color: #e2e6ea !important; }
-        #chart-container { height: 500px; width: 100%; }
-        .table-container { height: calc(100vh - 150px); overflow: auto; font-size: 0.9rem; }
-        thead th { position: sticky; top: 0; z-index: 10; background: #f8f9fa !important; white-space: nowrap; padding: 12px 10px; }
-        .sortable-header { cursor: pointer; user-select: none; }
-        .sortable-header:hover { background-color: #e9ecef !important; }
-        .sortable-header::after { content: " ↕"; font-size: 0.7em; color: #aaa; margin-left: 5px; }
-        .table-nowrap td { white-space: nowrap; vertical-align: middle; padding: 8px 15px; }
+        /* === 1. 布局基础 === */
+        html, body { 
+            height: 100%; 
+            overflow: hidden; 
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f5f7fa !important; /* 全局背景微调为淡灰蓝 */
+        }
+        .main-wrapper { height: 100%; display: flex; flex-direction: column; }
         
-        /* 进度条样式 */
-        #progress-container { width: 300px; display: none; }
+        /* === 2. 顶部工具栏 === */
+        .toolbar-section {
+            flex-shrink: 0; 
+            padding: 12px 24px; 
+            background-color: #ffffff;
+            border-bottom: 1px solid #e1e4e8; 
+            z-index: 2000;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.03); /* 增加一点点悬浮感 */
+        }
+
+        /* === 3. 表格容器 === */
+        .table-container {
+            flex-grow: 1; 
+            overflow: auto; 
+            padding: 0; 
+            position: relative;
+            background: #fff;
+        }
+        .table { margin-bottom: 0; }
+
+        /* === 4. 表头美化 (核心修改) === */
+        thead th { 
+            position: sticky; 
+            top: 0; 
+            z-index: 1000;
+            /* 背景改为极淡的灰色，区分内容 */
+            background-color: #f8f9fa !important; 
+            /* 底部加粗边框 */
+            border-bottom: 2px solid #e9ecef !important;
+            border-top: none !important;
+            border-left: none !important;
+            border-right: none !important; /* 去除左右边框，更清爽 */
+            padding: 0; 
+            height: 48px; /* 稍微降低高度 */
+            vertical-align: middle;
+            background-clip: padding-box;
+            box-shadow: 0 1px 0 #e9ecef; /* 滚动时的阴影线 */
+        }
+        
+        /* 表头内容区域 */
+        .th-content {
+            padding: 0 16px; /* 增加左右间距 */
+            display: flex; 
+            align-items: center; 
+            justify-content: space-between;
+            width: 100%; 
+            height: 100%; 
+            cursor: pointer; 
+            position: relative;
+            color: #495057; /* 字体深灰，不要纯黑 */
+            font-weight: 600; /* 半粗体 */
+            font-size: 13px;  /* 字体稍微改小，显得精致 */
+            transition: background-color 0.2s;
+        }
+        
+        /* 鼠标悬停表头效果 */
+        .th-content:hover { 
+            background-color: #eef1f6; 
+            color: #0d6efd; /* 悬停变蓝 */
+        }
+
+        /* === 5. 图标美化 === */
+        /* 排序图标：默认半透明，悬停变实 */
+        .sort-icon { 
+            font-size: 10px; 
+            color: #adb5bd; 
+            margin-left: 6px; 
+            opacity: 0.5;
+            transition: all 0.2s;
+        }
+        .th-content:hover .sort-icon { opacity: 1; color: #0d6efd; }
+        
+        /* 问号图标：更加低调 */
+        .info-icon {
+            display: inline-flex; align-items: center; justify-content: center;
+            width: 14px; height: 14px; 
+            border-radius: 50%; 
+            background-color: rgba(173, 181, 189, 0.3); /* 半透明灰 */
+            color: #6c757d; 
+            font-size: 10px; 
+            margin-left: 5px; 
+            cursor: help;
+            transition: all 0.2s;
+        }
+        .info-icon:hover { 
+            background-color: #0d6efd; 
+            color: white; 
+        }
+
+        /* === 6. 筛选状态高亮 === */
+        /* 当列被筛选时，整个表头变蓝底 */
+        .filter-active .th-content { 
+            background-color: #e8f2ff; 
+            color: #0d6efd;
+            border-bottom: 2px solid #0d6efd; /* 底部加深蓝线 */
+        }
+        .filter-active .sort-icon { color: #0d6efd; opacity: 1; }
+
+        /* === 7. 高级筛选浮窗 === */
+        .filter-popup {
+            display: none; 
+            position: absolute; top: 100%; left: 0;
+            min-width: 220px;
+            background: white;
+            border: 1px solid rgba(0,0,0,0.1); /* 边框更淡 */
+            box-shadow: 0 8px 24px rgba(0,0,0,0.12); /* 投影更柔和 */
+            border-radius: 6px;
+            padding: 16px;
+            z-index: 1050;
+            cursor: default; 
+            font-size: 13px;
+        }
+        thead th:hover .filter-popup, 
+        .filter-popup:hover { display: block; }
+        thead th:last-child .filter-popup { left: auto; right: 0; }
+
+        /* 输入框美化 */
+        .filter-input-group { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+        .filter-input { 
+            width: 80px; font-size: 13px; padding: 6px; 
+            border-color: #dee2e6; background: #f8f9fa;
+        }
+        .filter-input:focus { background: #fff; border-color: #86b7fe; box-shadow: none; }
+        .filter-label { font-size: 12px; color: #868e96; margin-bottom: 6px; display: block; font-weight: 500;}
+
+        /* === 8. 数据行美化 === */
+        .table-nowrap td { 
+            white-space: nowrap; 
+            vertical-align: middle; 
+            padding: 10px 16px; /* 增加舒适度 */
+            font-size: 13px;    /* 字体统一 */
+            color: #212529;
+            border-bottom: 1px solid #f1f3f5; /* 极淡的分割线 */
+        }
+        .clickable-row { cursor: pointer; transition: background-color 0.1s; }
+        .clickable-row:hover { background-color: #f1f8ff !important; } /* 悬停色更清爽 */
+        
+        /* 第一列代码加粗 */
+        .fw-bold { font-weight: 600 !important; color: #343a40; }
+        
+        /* === 其他 === */
+        #chart-container { height: 500px; width: 100%; }
+        .tooltip { z-index: 10000 !important; }
     </style>
 </head>
 <body class="bg-light">
 
-<div class="container-fluid py-4 px-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <h2 class="h4">📈 港股全维财务数据监控</h2>
-        
-        <div class="d-flex align-items-center">
-            <div id="progress-container" class="me-3">
-                <div class="d-flex justify-content-between small text-muted mb-1">
-                    <span id="progress-msg">正在更新...</span>
-                    <span id="progress-pct">0%</span>
+<div class="main-wrapper">
+    <div class="toolbar-section">
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center">
+                <h2 class="h6 mb-0 fw-bold text-dark d-flex align-items-center">
+                    <span style="font-size: 1.2rem; margin-right: 8px;">📊</span> 港股全维财务监控
+                </h2>
+                <span class="badge bg-light text-secondary border ms-3 fw-normal">
+                    共 <strong id="visibleCount" class="text-dark">{{ stocks|length }}</strong> / {{ stocks|length }}
+                </span>
+                <span class="badge bg-light text-secondary border ms-2 fw-normal">
+                    🕒 <span id="updateTime">{{ last_updated }}</span>
+                </span>
+            </div>
+            
+            <div class="d-flex align-items-center">
+                <div id="progress-container" class="me-3" style="display:none;">
+                    <div class="progress" style="height: 6px; width: 120px;">
+                        <div id="progress-bar" class="progress-bar bg-success" style="width: 0%"></div>
+                    </div>
+                    <div class="text-center" style="font-size: 10px; color: #999; margin-top: 2px;" id="progress-msg"></div>
                 </div>
-                <div class="progress" style="height: 8px;">
-                    <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+                
+                <div class="btn-group">
+                    <button id="refreshBtn" onclick="triggerCrawl()" class="btn btn-outline-secondary btn-sm">⚡ 刷新</button>
+                    <button id="recalcBtn" onclick="triggerRecalculate()" class="btn btn-outline-secondary btn-sm">🛠️ 补全</button>
+                    <button id="restartBtn" onclick="restartService()" class="btn btn-outline-danger btn-sm">🔥 重启</button>
                 </div>
             </div>
-
-            <span class="text-muted small me-3">点击表头排序 / 点击行看图</span>
-            
-            <button id="refreshBtn" onclick="triggerCrawl()" class="btn btn-primary btn-sm">
-                ⚡ 手动刷新数据
-            </button>
         </div>
     </div>
 
-    <div class="card shadow-sm">
-        <div class="card-body p-0 table-container">
-            <table class="table table-bordered table-striped table-hover mb-0 table-nowrap" id="stockTable">
-                <thead>
-                    <tr>
-                        <th class="bg-light text-primary">代码</th>
-                        <th class="bg-light text-primary">名称</th>
-                        <th>日期</th>
-                        {% for field in fields %}
-                        <th class="sortable-header" onclick="sortTable({{ loop.index0 + 3 }}, 'numeric')">
-                            {{ field }}
-                        </th>
-                        {% endfor %}
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for stock in stocks %}
-                    <tr class="clickable-row" onclick="loadChart('{{ stock.code }}')">
-                        <td class="fw-bold">{{ stock.code }}</td>
-                        <td>{{ stock.name }}</td>
-                        <td>{{ stock.date }}</td>
-                        {% for field in fields %}
-                        <td>{{ stock[field] }}</td>
-                        {% endfor %}
-                    </tr>
+    <div class="table-container">
+        <table class="table table-hover mb-0 table-nowrap" id="stockTable">
+            <thead>
+                <tr>
+                    <th style="min-width: 90px;"><div class="th-content" onclick="sortTable('code', 'string')">代码 <span class="sort-icon"></span></div></th>
+                    <th style="min-width: 120px;"><div class="th-content" onclick="sortTable('name', 'string')">名称 <span class="sort-icon"></span></div></th>
+                    <th style="min-width: 100px;"><div class="th-content" onclick="sortTable('date', 'string')">日期 <span class="sort-icon"></span></div></th>
+
+                    {% for col in columns %}
+                    <th data-key="{{ col.key }}">
+                        <div class="th-content" onclick="sortTable('{{ col.key }}', 'numeric')">
+                            <span class="d-flex align-items-center">
+                                {{ col.label }}
+                                {% if col.tip %}
+                                <span class="info-icon" 
+                                      data-bs-toggle="tooltip" 
+                                      data-bs-placement="bottom" 
+                                      title="<b>{{ col.desc }}</b><br><small>{{ col.tip }}</small>"
+                                      onclick="event.stopPropagation()">?</span>
+                                {% endif %}
+                            </span>
+                            <span class="sort-icon"></span>
+                        </div>
+
+                        <div class="filter-popup" onclick="event.stopPropagation()">
+                            <span class="filter-label">筛选 {{ col.label }}:</span>
+                            <div class="filter-input-group">
+                                <input type="number" class="form-control form-control-sm filter-input" placeholder="Min" id="min-{{ col.key }}">
+                                <span class="text-muted">-</span>
+                                <input type="number" class="form-control form-control-sm filter-input" placeholder="Max" id="max-{{ col.key }}">
+                            </div>
+                            <div class="d-flex justify-content-between pt-2 border-top">
+                                <button class="btn btn-light btn-sm px-3" style="font-size: 12px;" onclick="clearFilter(this, '{{ col.key }}')">清除</button>
+                                <button class="btn btn-primary btn-sm px-3" style="font-size: 12px;" onclick="confirmFilter(this, '{{ col.key }}')">确认</button>
+                            </div>
+                        </div>
+                    </th>
                     {% endfor %}
-                </tbody>
-            </table>
-        </div>
+                </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+        </table>
     </div>
 </div>
 
@@ -86,148 +248,202 @@
                 <h5 class="modal-title" id="chartTitle">历史趋势分析</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
-            <div class="modal-body">
-                <div id="chart-container"></div>
-            </div>
+            <div class="modal-body"><div id="chart-container"></div></div>
         </div>
     </div>
 </div>
 
 <script>
-    // === 核心逻辑 1: 触发爬虫 ===
-    function triggerCrawl() {
-        const btn = document.getElementById('refreshBtn');
-        btn.disabled = true;
-        btn.innerText = "⏳ 正在请求...";
-
-        fetch('/api/trigger_crawl')
-            .then(res => res.json())
-            .then(data => {
-                if(data.success) {
-                    // 启动成功，UI的更新交给 pollingTask 处理
-                    console.log("任务已启动");
-                } else {
-                    alert(data.message);
-                }
-            })
-            .catch(err => {
-                console.error(err);
-                btn.disabled = false;
-                btn.innerText = "⚡ 手动刷新数据";
-            });
-    }
-
-    // === 核心逻辑 2: 轮询进度 ===
-    // 每 1.5 秒检查一次后台状态
-    setInterval(pollStatus, 1500);
-
-    function pollStatus() {
-        fetch('/api/status')
-            .then(res => res.json())
-            .then(data => {
-                const btn = document.getElementById('refreshBtn');
-                const progressContainer = document.getElementById('progress-container');
-                const progressBar = document.getElementById('progress-bar');
-                const progressMsg = document.getElementById('progress-msg');
-                const progressPct = document.getElementById('progress-pct');
-
-                if (data.is_running) {
-                    // === 运行中 ===
-                    btn.disabled = true;
-                    btn.innerText = "🚀 后台更新中...";
-                    btn.classList.remove('btn-primary');
-                    btn.classList.add('btn-secondary');
-
-                    // 显示进度条
-                    progressContainer.style.display = 'block';
-                    
-                    // 计算百分比
-                    let pct = 0;
-                    if (data.total > 0) {
-                        pct = Math.round((data.current / data.total) * 100);
-                    }
-                    
-                    progressBar.style.width = pct + "%";
-                    progressPct.innerText = pct + "%";
-                    progressMsg.innerText = `${data.message} (${data.current}/${data.total})`;
-
-                } else {
-                    // === 空闲中 ===
-                    // 只有当按钮还是禁用状态（说明刚才在跑）时，才恢复，避免闪烁
-                    if (btn.disabled) {
-                        btn.disabled = false;
-                        btn.innerText = "⚡ 手动刷新数据";
-                        btn.classList.remove('btn-secondary');
-                        btn.classList.add('btn-primary');
-                        
-                        // 隐藏进度条前，先显示满格一下
-                        progressBar.style.width = "100%";
-                        progressPct.innerText = "100%";
-                        setTimeout(() => {
-                            progressContainer.style.display = 'none';
-                            // 任务完成后，自动刷新页面以显示最新数据
-                            alert("更新完成！即将刷新页面显示最新数据。");
-                            location.reload(); 
-                        }, 1000);
-                    }
-                }
-            });
-    }
-
-    // === 下面是之前的图表和排序逻辑 (保持不变) ===
-    var myChart = echarts.init(document.getElementById('chart-container'));
-    var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
+    const g_stockData = {{ stocks | tojson | safe }};
+    const g_columns = {{ columns | tojson | safe }};
+    let g_visibleStocks = [...g_stockData]; 
     
-    document.getElementById('chartModal').addEventListener('shown.bs.modal', function () {
-        myChart.resize();
+    document.addEventListener("DOMContentLoaded", function(){
+        renderTable(g_stockData);
+        [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]')).map(function (el) { return new bootstrap.Tooltip(el, {html: true}); });
     });
 
-    function loadChart(code) {
-        chartModal.show();
-        myChart.showLoading();
-        fetch(`/api/history/${code}`)
-            .then(response => response.json())
-            .then(data => {
-                myChart.hideLoading();
-                document.getElementById('chartTitle').innerText = `${data.name} (${code}) - 财务历史趋势`;
-                var option = {
-                    tooltip: { trigger: 'axis' },
-                    grid: { left: '5%', right: '5%', bottom: '10%', containLabel: true },
-                    legend: { data: ['PE (市盈率)', 'PEG'] },
-                    xAxis: { type: 'category', data: data.dates },
-                    yAxis: [ { type: 'value', name: 'PE' }, { type: 'value', name: 'PEG', alignTicks: true } ],
-                    series: [
-                        { name: 'PE (市盈率)', type: 'line', data: data.pe, smooth: true },
-                        { name: 'PEG', type: 'line', yAxisIndex: 1, data: data.peg, smooth: true, itemStyle: { color: '#ff6b6b' } }
-                    ]
-                };
-                myChart.setOption(option);
-            })
-            .catch(err => { myChart.hideLoading(); });
+    // 渲染函数 (包含 -0.00 修复)
+    function renderTable(data) {
+        const tbody = document.getElementById('tableBody');
+        if(data.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="100" class="text-center py-4 text-muted">没有找到匹配的股票</td></tr>';
+            document.getElementById('visibleCount').innerText = 0;
+            return;
+        }
+
+        const rowsHtml = data.map(stock => {
+            const colsHtml = g_columns.map(col => {
+                let val = stock[col.key];
+                if (val !== undefined && val !== null && val !== '-' && val !== '') {
+                    let num = parseFloat(String(val).replace(/,/g, ''));
+                    if (Math.abs(num) < 0.005) {
+                        val = "0.00";
+                    } else {
+                        val = num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                    }
+                    // 给负数加个颜色 (可选)
+                    if (num < 0) val = `<span class="text-danger">${val}</span>`;
+                } else {
+                    val = `<span class="text-muted">-</span>`;
+                }
+                return `<td>${val}</td>`;
+            }).join('');
+            
+            return `<tr class="clickable-row" onclick="loadChart('${stock.code}')">
+                <td class="fw-bold ps-4 text-primary">${stock.code}</td>
+                <td class="fw-bold">${stock.name}</td>
+                <td class="text-muted small">${stock.date}</td>
+                ${colsHtml}
+            </tr>`;
+        }).join('');
+        
+        tbody.innerHTML = rowsHtml;
+        document.getElementById('visibleCount').innerText = data.length;
     }
 
-    window.onresize = function() { myChart.resize(); };
+    // 筛选逻辑
+    const activeFilters = {}; 
 
-    let sortDirection = {};
-    function sortTable(columnIndex, type) {
-        const table = document.getElementById("stockTable");
-        const tbody = table.querySelector("tbody");
-        const rows = Array.from(tbody.querySelectorAll("tr"));
-        const currentDir = sortDirection[columnIndex] === 'asc' ? 'desc' : 'asc';
-        sortDirection[columnIndex] = currentDir;
+    function confirmFilter(btn, colKey) {
+        const popup = btn.closest('.filter-popup');
+        const minVal = popup.querySelector(`#min-${CSS.escape(colKey)}`).value;
+        const maxVal = popup.querySelector(`#max-${CSS.escape(colKey)}`).value;
 
-        rows.sort((rowA, rowB) => {
-            const cellA = rowA.cells[columnIndex].innerText.trim();
-            const cellB = rowB.cells[columnIndex].innerText.trim();
-            if (type === 'numeric') {
-                let valA = cellA === '-' ? -99999999 : parseFloat(cellA.replace(/,/g, ''));
-                let valB = cellB === '-' ? -99999999 : parseFloat(cellB.replace(/,/g, ''));
-                return currentDir === 'asc' ? valA - valB : valB - valA;
-            } else {
-                return currentDir === 'asc' ? cellA.localeCompare(cellB) : cellB.localeCompare(cellA);
+        if (!activeFilters[colKey]) activeFilters[colKey] = {};
+        activeFilters[colKey].min = minVal === "" ? null : parseFloat(minVal);
+        activeFilters[colKey].max = maxVal === "" ? null : parseFloat(maxVal);
+
+        updateHeaderStyle(colKey);
+        setTimeout(executeFiltering, 10);
+        // 筛选后自动关闭浮窗（通过模拟点击body关闭，这里简单处理，实际上hover css控制显示）
+        // CSS hover控制下，移开鼠标即消失，体验较好
+    }
+
+    function clearFilter(btn, colKey) {
+        const popup = btn.closest('.filter-popup');
+        popup.querySelector(`#min-${CSS.escape(colKey)}`).value = '';
+        popup.querySelector(`#max-${CSS.escape(colKey)}`).value = '';
+        
+        if (activeFilters[colKey]) {
+            activeFilters[colKey] = { min: null, max: null };
+            updateHeaderStyle(colKey);
+        }
+        setTimeout(executeFiltering, 10);
+    }
+
+    function updateHeaderStyle(colKey) {
+        const th = document.querySelector(`th[data-key="${colKey}"]`);
+        const filter = activeFilters[colKey];
+        if (filter && (filter.min !== null || filter.max !== null)) th.classList.add('filter-active');
+        else th.classList.remove('filter-active');
+    }
+
+    function executeFiltering() {
+        g_visibleStocks = g_stockData.filter(stock => {
+            for (const [key, range] of Object.entries(activeFilters)) {
+                if (range.min === null && range.max === null) continue;
+                let rawVal = stock[key];
+                if (!rawVal || rawVal === '-' || rawVal === '') return false;
+                let val = parseFloat(String(rawVal).replace(/,/g, '').replace('%', ''));
+                if (range.min !== null && val < range.min) return false;
+                if (range.max !== null && val > range.max) return false;
+            }
+            return true;
+        });
+        // 重新应用当前的排序（如果之前有排序的话）
+        if(sortState.key) {
+             doSort(sortState.key, sortState.type);
+        } else {
+             renderTable(g_visibleStocks);
+        }
+    }
+
+    // 排序逻辑
+    let sortState = { key: '', dir: 'asc', type: '' };
+
+    function sortTable(key, type) {
+        document.querySelectorAll('.sort-icon').forEach(el => el.innerText = '');
+        
+        if (sortState.key === key) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+        else { sortState.key = key; sortState.dir = 'asc'; }
+        sortState.type = type; // 记录类型方便筛选后重排
+        
+        const ths = document.querySelectorAll('thead th');
+        ths.forEach(th => {
+            const div = th.querySelector('.th-content');
+            if(div && div.onclick && div.onclick.toString().includes(`'${key}'`)) {
+                th.querySelector('.sort-icon').innerText = sortState.dir === 'asc' ? ' ▲' : ' ▼';
             }
         });
-        rows.forEach(row => tbody.appendChild(row));
+        
+        doSort(key, type);
+        renderTable(g_visibleStocks);
+    }
+
+    function doSort(key, type) {
+        g_visibleStocks.sort((a, b) => {
+            let valA = a[key];
+            let valB = b[key];
+            if (type === 'numeric') {
+                valA = (valA === '-' || !valA) ? -Infinity : parseFloat(String(valA).replace(/,/g, ''));
+                valB = (valB === '-' || !valB) ? -Infinity : parseFloat(String(valB).replace(/,/g, ''));
+                return sortState.dir === 'asc' ? valA - valB : valB - valA;
+            } else {
+                valA = valA || ""; valB = valB || "";
+                return sortState.dir === 'asc' ? valA.localeCompare(valB) : valB.localeCompare(valA);
+            }
+        });
+    }
+
+    // API 交互
+    function triggerRecalculate() {
+        if(!confirm("确定补全吗？")) return;
+        document.getElementById('recalcBtn').disabled = true;
+        fetch('/api/recalculate', { method: 'POST' });
+    }
+    function restartService() {
+        if(!confirm("确定重启吗？")) return;
+        fetch('/api/restart', { method: 'POST' }).then(() => {
+            const mask = document.createElement('div');
+            mask.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(255,255,255,0.9);z-index:9999;display:flex;justify-content:center;align-items:center;flex-direction:column;";
+            mask.innerHTML = `<div class="spinner-border text-primary mb-3" role="status"></div><h5 class="text-dark">服务正在重启...</h5><p class="text-muted">3秒后自动刷新</p>`;
+            document.body.appendChild(mask);
+            setTimeout(() => location.reload(), 3000);
+        });
+    }
+    function triggerCrawl() {
+        document.getElementById('refreshBtn').disabled = true;
+        fetch('/api/trigger_crawl');
+    }
+    setInterval(() => {
+        fetch('/api/status').then(res => res.json()).then(data => {
+            const container = document.getElementById('progress-container');
+            if (data.is_running) {
+                container.style.display = 'block';
+                const pct = data.total > 0 ? Math.round(data.current/data.total*100) : 0;
+                document.getElementById('progress-bar').style.width = pct + "%";
+                document.getElementById('progress-msg').innerText = `${data.message}`;
+            } else if (container.style.display === 'block') {
+                 location.reload();
+            }
+        });
+    }, 1500);
+
+    // 图表
+    var myChart = echarts.init(document.getElementById('chart-container'));
+    var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
+    document.getElementById('chartModal').addEventListener('shown.bs.modal', () => myChart.resize());
+    function loadChart(code) {
+        chartModal.show(); myChart.showLoading();
+        fetch(`/api/history/${code}`).then(res => res.json()).then(data => {
+            myChart.hideLoading();
+            myChart.setOption({
+                tooltip: { trigger: 'axis' }, legend: { data: ['PE', 'PEG'] }, xAxis: { data: data.dates },
+                yAxis: [ { type: 'value', name: 'PE' }, { type: 'value', name: 'PEG' } ],
+                series: [ { name: 'PE', type: 'line', data: data.pe }, { name: 'PEG', type: 'line', yAxisIndex: 1, data: data.peg } ]
+            });
+        });
     }
 </script>
 </body>
