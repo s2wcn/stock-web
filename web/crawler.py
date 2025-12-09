@@ -5,7 +5,6 @@ import random
 import math
 from datetime import datetime
 from database import stock_collection
-# 引入状态管理
 from crawler_state import status
 
 # === 1. 定义需要清洗为数字的基础字段 ===
@@ -16,9 +15,20 @@ NUMERIC_FIELDS = [
     "营业总收入", "营业总收入滚动环比增长(%)", "销售净利率(%)", "净利润", 
     "净利润滚动环比增长(%)", "股东权益回报率(%)", "市盈率", "PEG", "市净率", 
     "总资产回报率(%)",
-    # --- 新增字段 ---
     "基本每股收益同比增长率", "营业收入同比增长率", "营业利润率同比增长率"
 ]
+
+def get_ggt_codes():
+    print("📡 正在获取港股通成分股名单...")
+    try:
+        df = ak.stock_hk_ggt_components_em()
+        if df is not None and not df.empty:
+            codes = df['代码'].astype(str).tolist()
+            print(f"✅ 获取到 {len(codes)} 只港股通股票")
+            return set(codes)
+    except Exception as e:
+        print(f"❌ 获取港股通名单失败: {e}")
+    return set()
 
 def get_hk_codes_from_sina():
     print("📡 连接接口获取全市场清单...")
@@ -32,13 +42,13 @@ def get_hk_codes_from_sina():
         print(f"❌ 获取列表失败: {e}")
         return {}
 
-def fetch_and_save_single_stock(code, name):
+def fetch_and_save_single_stock(code, name, is_ggt=False):
     try:
         # === 1. 主数据：财务指标 ===
         df = ak.stock_hk_financial_indicator_em(symbol=code)
         if df is None or df.empty: return
 
-        # 标准化主数据的日期列
+        # 标准化日期列
         date_col = None
         for col in ['日期', 'date', 'Date', '统计日期']:
             if col in df.columns:
@@ -54,27 +64,25 @@ def fetch_and_save_single_stock(code, name):
         df[date_col] = pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d")
         df.rename(columns={date_col: 'date'}, inplace=True)
 
-        # === 2. 新增：获取成长性数据 (Time-Series) ===
+        # === 2. 获取成长性数据 (快照) ===
+        growth_data = {}
         try:
             df_growth = ak.stock_hk_growth_comparison_em(symbol=code)
             if df_growth is not None and not df_growth.empty:
-                g_date_col = next((c for c in ['日期', 'date', 'Date', '年度'] if c in df_growth.columns), None)
-                if g_date_col:
-                    df_growth[g_date_col] = pd.to_datetime(df_growth[g_date_col]).dt.strftime("%Y-%m-%d")
-                    df_growth.rename(columns={g_date_col: 'date'}, inplace=True)
-                    
-                    target_growth_cols = ["基本每股收益同比增长率", "营业收入同比增长率", "营业利润率同比增长率"]
-                    existing_cols = [c for c in target_growth_cols if c in df_growth.columns]
-                    
-                    if existing_cols:
-                        df = pd.merge(df, df_growth[['date'] + existing_cols], on='date', how='left', suffixes=('', '_dup'))
-                        drop_cols = [c for c in df.columns if c.endswith('_dup')]
-                        if drop_cols:
-                            df.drop(columns=drop_cols, inplace=True)
-        except Exception as e:
+                row_growth = df_growth.iloc[0]
+                target_keys = ["基本每股收益同比增长率", "营业收入同比增长率", "营业利润率同比增长率"]
+                for key in target_keys:
+                    if key in df_growth.columns:
+                        val = row_growth[key]
+                        if pd.notna(val) and val != "":
+                            try:
+                                growth_data[key] = float(val)
+                            except:
+                                growth_data[key] = val
+        except Exception:
             pass
 
-        # === 3. 新增：获取静态信息 (行业 & 简介) ===
+        # === 3. 获取静态信息 ===
         industry_val = ""
         intro_val = ""
 
@@ -89,7 +97,11 @@ def fetch_and_save_single_stock(code, name):
         try:
             df_info = ak.stock_individual_basic_info_hk_xq(symbol=code)
             if df_info is not None and not df_info.empty:
-                if "comintr" in df_info.columns:
+                if "item" in df_info.columns and "value" in df_info.columns:
+                    mask = df_info['item'] == 'comintr'
+                    if not mask.empty and mask.any():
+                        intro_val = str(df_info.loc[mask, 'value'].iloc[0])
+                elif "comintr" in df_info.columns:
                     intro_val = str(df_info["comintr"].iloc[0])
         except Exception:
             pass
@@ -111,9 +123,6 @@ def fetch_and_save_single_stock(code, name):
                 if pd.isna(v): continue
                 if k in NUMERIC_FIELDS:
                     try:
-                        # 核心逻辑：保持 AkShare 返回的原始数值
-                        # 如果 AkShare 返回 15.5 (代表 15.5%)，这里存储为 15.5
-                        # 这保证了后续 PEG 计算 (PE/Growth) 是 PE/15.5，符合通常的 PEG 定义
                         new_data[k] = float(str(v).replace(',', ''))
                     except:
                         new_data[k] = v
@@ -125,7 +134,7 @@ def fetch_and_save_single_stock(code, name):
             
             new_data["date"] = row_date
 
-            # === 计算衍生指标 ===
+            # === 计算衍生指标 (核心修复区域) ===
             def get_v(keys):
                 for k in keys:
                     if k in new_data and isinstance(new_data[k], (int, float)):
@@ -142,36 +151,40 @@ def fetch_and_save_single_stock(code, name):
             roa = get_v(['总资产回报率(%)', 'ROA'])
             net_margin = get_v(['销售净利率(%)', '销售净利率'])
 
-            # PEG: PE / Growth
-            # 假设 PE=20, Growth=10 (即 10%) -> 20/10 = 2.0
-            if "PEG" not in new_data and pe is not None and growth is not None:
+            # 1. PEG: 必须 PE > 0。亏损股不谈 PEG。
+            if "PEG" not in new_data and pe is not None and pe > 0 and growth is not None:
                 if growth != 0:
                     new_data['PEG'] = round(pe / growth, 4)
 
-            # PEGY: PE / (Growth + Yield)
-            # 假设 Yield=5 (即 5%) -> 20 / (10 + 5) = 1.33
-            if pe is not None and growth is not None and dividend_yield is not None:
+            # 2. PEGY: 必须 PE > 0。
+            if pe is not None and pe > 0 and growth is not None and dividend_yield is not None:
                 total_return = growth + dividend_yield
                 if total_return > 0:
                     new_data['PEGY'] = round(pe / total_return, 4)
 
-            # 彼得林奇估值: Growth + Yield -> 15 (15%)
+            # 3. 彼得林奇估值 (增长+股息)，不受 PE 正负影响，保留
             if growth is not None and dividend_yield is not None:
                 new_data['彼得林奇估值'] = round(growth + dividend_yield, 2)
 
-            if ocf_ps is not None and eps is not None and eps != 0:
+            # 4. 净现比: 必须 EPS > 0。防止 EPS<0 且 OCF<0 导致结果为正的“双亏误导”。
+            if ocf_ps is not None and eps is not None and eps > 0:
                 new_data['净现比'] = round(ocf_ps / eps, 2)
 
-            if pe is not None and eps is not None and ocf_ps is not None and ocf_ps != 0:
+            # 5. 市现率: 必须 PE > 0 且 EPS > 0。
+            # 因为这里是用 PE*EPS 反推股价，如果双负，算出来的股价是正的，逻辑完全错误。
+            if pe is not None and pe > 0 and eps is not None and eps > 0 and ocf_ps is not None and ocf_ps != 0:
                 price = pe * eps
                 new_data['市现率'] = round(price / ocf_ps, 2)
 
+            # 6. 财务杠杆
             if roe is not None and roa is not None and roa != 0:
                 new_data['财务杠杆'] = round(roe / roa, 2)
 
+            # 7. 总资产周转率
             if roa is not None and net_margin is not None and net_margin != 0:
                 new_data['总资产周转率'] = round(roa / net_margin, 2)
 
+            # 8. 格雷厄姆数 (根号下必须为正，已隐含在val>0中)
             if eps is not None and bvps is not None:
                 val = 22.5 * eps * bvps
                 if val > 0:
@@ -184,6 +197,11 @@ def fetch_and_save_single_stock(code, name):
             
             latest_record = history_map[row_date]
 
+        if growth_data and latest_record:
+            latest_record.update(growth_data)
+            if latest_record["date"] in history_map:
+                history_map[latest_record["date"]].update(growth_data)
+
         sorted_history = sorted(history_map.values(), key=lambda x: x["date"])
 
         doc = {
@@ -193,7 +211,8 @@ def fetch_and_save_single_stock(code, name):
             "latest_data": latest_record,
             "history": sorted_history,
             "industry": industry_val,
-            "intro": intro_val
+            "intro": intro_val,
+            "is_ggt": is_ggt
         }
 
         stock_collection.replace_one({"_id": code}, doc, upsert=True)
@@ -206,8 +225,10 @@ def run_crawler_task():
     
     code_map = get_hk_codes_from_sina()
     if not code_map: 
-        status.finish()
+        status.finish("初始化失败")
         return
+
+    ggt_codes = get_ggt_codes()
 
     all_codes = list(code_map.items())
     total = len(all_codes)
@@ -216,12 +237,26 @@ def run_crawler_task():
     status.start(total)
 
     for i, (code, name) in enumerate(all_codes):
+        if status.should_stop:
+            print("🛑 接到停止指令，爬虫任务已终止。")
+            status.finish("任务已由用户终止")
+            return
+
         status.update(i + 1, message=f"正在处理: {name}")
-        fetch_and_save_single_stock(code, name)
+        
+        is_ggt_stock = code in ggt_codes
+        fetch_and_save_single_stock(code, name, is_ggt=is_ggt_stock)
+        
+        if status.should_stop: break
+        
         time.sleep(random.uniform(1.0, 2.0))
     
-    status.finish()
-    print(f"[{datetime.now()}] 🎉 采集完成！")
+    if status.should_stop:
+        status.finish("任务已由用户终止")
+    else:
+        status.finish("采集完成")
+    
+    print(f"[{datetime.now()}] 🎉 采集任务结束")
 
 if __name__ == "__main__":
     run_crawler_task()

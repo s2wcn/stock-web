@@ -41,7 +41,7 @@
         thead th { 
             position: sticky; 
             top: 0; 
-            z-index: 1000; /* 普通表头层级 */
+            z-index: 1000;
             background-color: #f8f9fa !important; 
             border-bottom: 2px solid #e9ecef !important;
             border-top: none !important;
@@ -55,133 +55,75 @@
             min-width: 100px; 
         }
         
-        /* === 5. 冻结列核心样式 (修复重叠透明问题) === */
+        /* === 5. 冻结列核心样式 === */
+        .sticky-col { position: sticky !important; z-index: 101; border-bottom: 1px solid #f1f3f5; }
+        tbody td.sticky-col { background-color: #fff !important; }
+        thead th.sticky-col { z-index: 1002 !important; background-color: #f8f9fa !important; }
+        .table-hover tbody tr:hover td.sticky-col { background-color: #f1f8ff !important; }
+
+        /* [修改] 宽度进一步缩小至 85px */
+        .col-code { 
+            left: 0; 
+            width: 85px; min-width: 85px; max-width: 85px; 
+            border-right: 1px solid #f1f3f5; 
+        }
         
-        /* 基础冻结列属性 */
-        .sticky-col {
-            position: sticky !important;
-            z-index: 101; /* 必须高于普通td(auto) */
-            border-bottom: 1px solid #f1f3f5;
-        }
-
-        /* [核心修复] 强制给数据行的冻结列设置纯白背景，防止透视 */
-        tbody td.sticky-col {
-            background-color: #fff !important; 
-        }
-
-        /* 表头交叉点 (左上角两格) */
-        thead th.sticky-col {
-            z-index: 1002 !important; /* 最高层级 */
-            background-color: #f8f9fa !important; /* 保持表头底色 */
-        }
-
-        /* [核心修复] 鼠标悬停行时，冻结列背景色也要同步变色 (浅蓝) */
-        /* 如果不加这行，悬停时冻结列会保持白色，很难看 */
-        .clickable-row:hover .sticky-col {
-            background-color: #f1f8ff !important;
-        }
-
-        /* 第一列：代码 (靠左 0px) */
-        .col-code {
-            left: 0;
-            width: 90px;
-            min-width: 90px;
-            max-width: 90px;
-            border-right: 1px solid #f1f3f5;
-        }
-
-        /* 第二列：名称 (靠左 90px) */
-        .col-name {
-            left: 90px; /* 紧贴第一列 */
-            width: 120px;
-            min-width: 120px;
-            max-width: 120px;
-            /* 右侧加深一点边框，并在右侧加阴影实现“浮起”感 */
+        /* [修改] 第二列跟随左移至 85px */
+        .col-name { 
+            left: 85px; 
+            width: 120px; min-width: 120px; max-width: 120px; 
             border-right: 1px solid #e1e4e8 !important; 
             box-shadow: 4px 0 8px -4px rgba(0,0,0,0.1); 
         }
 
+        /* === 单元格样式 === */
+        .clickable-cell { cursor: pointer; transition: background-color 0.1s; }
+        .clickable-cell:hover { background-color: #e2e6ea !important; box-shadow: inset 0 0 0 1px #ced4da; }
+
         /* === 6. 表头内容美化 === */
         .th-content {
-            padding: 0 12px;
-            display: flex; 
-            align-items: center; 
-            justify-content: space-between; 
-            width: 100%; 
-            min-height: 32px;
-            cursor: pointer; 
-            position: relative;
-            color: #495057; 
-            font-weight: 600; 
-            font-size: 13px;  
-            transition: background-color 0.2s;
+            padding: 0 12px; display: flex; align-items: center; justify-content: space-between; 
+            width: 100%; min-height: 32px; cursor: pointer; position: relative;
+            color: #495057; font-weight: 600; font-size: 13px; transition: background-color 0.2s;
         }
-
-        /* 换行控制 */
         .th-content > span:first-child {
-            display: inline-block;
-            white-space: normal;      
-            min-width: 5em;           
-            max-width: 9.5em;         
-            line-height: 1.35;        
-            text-align: left;
+            display: inline-block; white-space: normal; min-width: 5em; max-width: 9.5em; line-height: 1.35; text-align: left;
         }
-        
-        .th-content:hover { 
-            background-color: #eef1f6; 
-            color: #0d6efd; 
-        }
+        .th-content:hover { background-color: #eef1f6; color: #0d6efd; }
+        .th-no-sort { cursor: default !important; }
+        .th-no-sort:hover { background-color: transparent !important; color: #495057 !important; }
 
         /* === 7. 图标与交互 === */
-        .sort-icon { 
-            font-size: 10px; color: #adb5bd; margin-left: 4px; 
-            opacity: 0.5; transition: all 0.2s; white-space: nowrap; flex-shrink: 0;      
-        }
+        .sort-icon { font-size: 10px; color: #adb5bd; margin-left: 4px; opacity: 0.5; transition: all 0.2s; white-space: nowrap; flex-shrink: 0; }
         .th-content:hover .sort-icon { opacity: 1; color: #0d6efd; }
-        
         .info-icon {
             display: inline-flex; align-items: center; justify-content: center;
-            width: 14px; height: 14px; 
-            border-radius: 50%; 
-            background-color: rgba(173, 181, 189, 0.3); 
-            color: #6c757d; font-size: 10px; margin-left: 4px; 
-            cursor: help; transition: all 0.2s; flex-shrink: 0; 
+            width: 14px; height: 14px; border-radius: 50%; background-color: rgba(173, 181, 189, 0.3); 
+            color: #6c757d; font-size: 10px; margin-left: 4px; cursor: help; transition: all 0.2s; flex-shrink: 0; 
         }
         .info-icon:hover { background-color: #0d6efd; color: white; }
 
-        .filter-active .th-content { 
-            background-color: #e8f2ff; color: #0d6efd; border-bottom: 2px solid #0d6efd; 
-        }
+        .filter-active .th-content { background-color: #e8f2ff; color: #0d6efd; border-bottom: 2px solid #0d6efd; }
         .filter-active .sort-icon { color: #0d6efd; opacity: 1; }
 
         .filter-popup {
-            display: none; position: absolute; top: 100%; left: 0;
-            min-width: 220px; background: white;
-            border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 8px 24px rgba(0,0,0,0.12); 
-            border-radius: 6px; padding: 16px; z-index: 1050; cursor: default; font-size: 13px;
+            display: none; position: absolute; top: 100%; left: 0; min-width: 220px; background: white;
+            border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 8px 24px rgba(0,0,0,0.12); border-radius: 6px; padding: 16px; z-index: 1050; cursor: default; font-size: 13px;
         }
         thead th:hover .filter-popup, .filter-popup:hover { display: block; }
         thead th:last-child .filter-popup { left: auto; right: 0; }
 
         .filter-input-group { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-        .filter-input { 
-            width: 80px; font-size: 13px; padding: 6px; 
-            border-color: #dee2e6; background: #f8f9fa;
-        }
+        .filter-input { width: 80px; font-size: 13px; padding: 6px; border-color: #dee2e6; background: #f8f9fa; }
         .filter-input:focus { background: #fff; border-color: #86b7fe; box-shadow: none; }
         .filter-label { font-size: 12px; color: #868e96; margin-bottom: 6px; display: block; font-weight: 500;}
 
-        .table-nowrap td { 
-            white-space: nowrap; vertical-align: middle; 
-            padding: 10px 16px; font-size: 13px; color: #212529;
-            border-bottom: 1px solid #f1f3f5; 
-        }
-        .clickable-row { cursor: pointer; transition: background-color 0.1s; }
-        .clickable-row:hover { background-color: #f1f8ff !important; } 
-        
+        .table-nowrap td { white-space: nowrap; vertical-align: middle; padding: 10px 16px; font-size: 13px; color: #212529; border-bottom: 1px solid #f1f3f5; }
+        .table-hover tbody tr:hover { background-color: #f1f8ff; } 
         .fw-bold { font-weight: 600 !important; color: #343a40; }
         
         #chart-container { height: 500px; width: 100%; }
+        .tooltip-inner { max-width: 300px !important; text-align: left !important; }
         .tooltip { z-index: 10000 !important; }
     </style>
 </head>
@@ -210,6 +152,8 @@
                     <div class="text-center" style="font-size: 10px; color: #999; margin-top: 2px;" id="progress-msg"></div>
                 </div>
                 
+                <button id="stopBtn" onclick="stopTask()" class="btn btn-danger btn-sm me-2" style="display:none;">⏹ 停止</button>
+
                 <div class="btn-group">
                     <button id="refreshBtn" onclick="triggerCrawl()" class="btn btn-outline-secondary btn-sm">⚡ 刷新</button>
                     <button id="recalcBtn" onclick="triggerRecalculate()" class="btn btn-outline-secondary btn-sm">🛠️ 补全</button>
@@ -227,7 +171,7 @@
                         <div class="th-content" onclick="sortTable('code', 'string')"><span>代码</span> <span class="sort-icon"></span></div>
                     </th>
                     <th class="sticky-col col-name">
-                        <div class="th-content" onclick="sortTable('name', 'string')"><span>名称</span> <span class="sort-icon"></span></div>
+                        <div class="th-content th-no-sort"><span>名称</span></div>
                     </th>
                     <th style="min-width: 100px;">
                         <div class="th-content" onclick="sortTable('date', 'string')"><span>日期</span> <span class="sort-icon"></span></div>
@@ -235,19 +179,34 @@
 
                     {% for col in columns %}
                     <th data-key="{{ col.key }}">
-                        <div class="th-content" onclick="sortTable('{{ col.key }}', 'numeric')">
-                            <span class="d-flex align-items-center">
-                                {{ col.label }}
-                                {% if col.tip %}
-                                <span class="info-icon" 
-                                      data-bs-toggle="tooltip" 
-                                      data-bs-placement="bottom" 
-                                      title="<b>{{ col.desc }}</b><br><small>{{ col.tip }}</small>"
-                                      onclick="event.stopPropagation()">?</span>
-                                {% endif %}
-                            </span>
-                            <span class="sort-icon"></span>
-                        </div>
+                        {% if col.no_sort %}
+                            <div class="th-content th-no-sort">
+                                <span class="d-flex align-items-center">
+                                    {{ col.label }}
+                                    {% if col.tip %}
+                                    <span class="info-icon" 
+                                          data-bs-toggle="tooltip" 
+                                          data-bs-placement="bottom" 
+                                          title="<b>{{ col.desc }}</b><br><small>{{ col.tip }}</small>"
+                                          onclick="event.stopPropagation()">?</span>
+                                    {% endif %}
+                                </span>
+                            </div>
+                        {% else %}
+                            <div class="th-content" onclick="sortTable('{{ col.key }}', 'numeric')">
+                                <span class="d-flex align-items-center">
+                                    {{ col.label }}
+                                    {% if col.tip %}
+                                    <span class="info-icon" 
+                                          data-bs-toggle="tooltip" 
+                                          data-bs-placement="bottom" 
+                                          title="<b>{{ col.desc }}</b><br><small>{{ col.tip }}</small>"
+                                          onclick="event.stopPropagation()">?</span>
+                                    {% endif %}
+                                </span>
+                                <span class="sort-icon"></span>
+                            </div>
+                        {% endif %}
                         <div class="filter-popup" onclick="event.stopPropagation()">
                             <span class="filter-label">筛选 {{ col.label }}:</span>
                             <div class="filter-input-group">
@@ -288,11 +247,21 @@
     
     document.addEventListener("DOMContentLoaded", function(){
         renderTable(g_stockData);
-        [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]')).map(function (el) { return new bootstrap.Tooltip(el, {html: true}); });
     });
+
+    function escapeHtml(text) {
+        if (!text) return "";
+        return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+    }
 
     function renderTable(data) {
         const tbody = document.getElementById('tableBody');
+        
+        document.querySelectorAll('#tableBody .info-icon').forEach(el => {
+            const tooltip = bootstrap.Tooltip.getInstance(el);
+            if (tooltip) tooltip.dispose();
+        });
+
         if(data.length === 0) {
             tbody.innerHTML = '<tr><td colspan="100" class="text-center py-4 text-muted">没有找到匹配的股票</td></tr>';
             document.getElementById('visibleCount').innerText = 0;
@@ -309,6 +278,7 @@
                 let num = parseFloat(String(val).replace(/,/g, ''));
                 let displayVal = val; 
                 let isNegative = false;
+                let suffix = col.suffix || '';
 
                 if (!isNaN(num)) {
                     isNegative = num < 0;
@@ -317,22 +287,37 @@
                     } else {
                         displayVal = num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                     }
-                    if (col.suffix) {
-                        displayVal += col.suffix;
-                    }
+                    displayVal += suffix;
                 }
 
                 if (isNegative) {
                     displayVal = `<span class="text-danger">${displayVal}</span>`;
                 }
                 
-                return `<td>${displayVal}</td>`;
+                if (col.no_chart) {
+                    return `<td>${displayVal}</td>`;
+                } else {
+                    return `<td class="clickable-cell" onclick="loadChart('${stock.code}', '${col.key}', '${col.label}', '${suffix}')">${displayVal}</td>`;
+                }
             }).join('');
             
-            // ⚠️ 关键代码：给代码和名称列也加上 sticky-col 类，并对应位置类 col-code / col-name
-            return `<tr class="clickable-row" onclick="loadChart('${stock.code}')">
-                <td class="sticky-col col-code fw-bold ps-4 text-primary">${stock.code}</td>
-                <td class="sticky-col col-name fw-bold">${stock.name}</td>
+            let nameContent = `<span class="text-truncate" style="max-width: 90px; display: inline-block; vertical-align: middle;">${stock.name}</span>`;
+            if (stock.intro) {
+                nameContent += `<span class="info-icon ms-1" style="vertical-align: middle; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="right" title="${escapeHtml(stock.intro)}">?</span>`;
+            }
+
+            // [修改] 代码列逻辑：港股通红字 + 蓝底“通”字徽章
+            let codeColor = stock.is_ggt ? 'text-danger' : 'text-primary';
+            let codeContent = `<span class="${codeColor}">${stock.code}</span>`;
+            
+            if (stock.is_ggt) {
+                codeContent += `<span class="badge bg-primary ms-1 fw-normal" style="font-size: 10px; padding: 2px 4px; vertical-align: text-bottom;">通</span>`;
+            }
+
+            // [修改] 缩小了内边距 ps-2 (约8px)，让85px宽度能容纳更多内容
+            return `<tr>
+                <td class="sticky-col col-code fw-bold ps-2">${codeContent}</td>
+                <td class="sticky-col col-name fw-bold d-flex align-items-center justify-content-between">${nameContent}</td>
                 <td class="text-muted small">${stock.date}</td>
                 ${colsHtml}
             </tr>`;
@@ -340,43 +325,40 @@
         
         tbody.innerHTML = rowsHtml;
         document.getElementById('visibleCount').innerText = data.length;
+
+        [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]')).map(function (el) { 
+            return new bootstrap.Tooltip(el, {html: true}); 
+        });
     }
 
-    // --- 筛选与排序逻辑 (保持不变) ---
+    // --- 筛选与排序 ---
     const activeFilters = {}; 
-
     function confirmFilter(btn, colKey) {
         const popup = btn.closest('.filter-popup');
         const minVal = popup.querySelector(`#min-${CSS.escape(colKey)}`).value;
         const maxVal = popup.querySelector(`#max-${CSS.escape(colKey)}`).value;
-
         if (!activeFilters[colKey]) activeFilters[colKey] = {};
         activeFilters[colKey].min = minVal === "" ? null : parseFloat(minVal);
         activeFilters[colKey].max = maxVal === "" ? null : parseFloat(maxVal);
-
         updateHeaderStyle(colKey);
         setTimeout(executeFiltering, 10);
     }
-
     function clearFilter(btn, colKey) {
         const popup = btn.closest('.filter-popup');
         popup.querySelector(`#min-${CSS.escape(colKey)}`).value = '';
         popup.querySelector(`#max-${CSS.escape(colKey)}`).value = '';
-        
         if (activeFilters[colKey]) {
             activeFilters[colKey] = { min: null, max: null };
             updateHeaderStyle(colKey);
         }
         setTimeout(executeFiltering, 10);
     }
-
     function updateHeaderStyle(colKey) {
         const th = document.querySelector(`th[data-key="${colKey}"]`);
         const filter = activeFilters[colKey];
         if (filter && (filter.min !== null || filter.max !== null)) th.classList.add('filter-active');
         else th.classList.remove('filter-active');
     }
-
     function executeFiltering() {
         g_visibleStocks = g_stockData.filter(stock => {
             for (const [key, range] of Object.entries(activeFilters)) {
@@ -389,22 +371,15 @@
             }
             return true;
         });
-        if(sortState.key) {
-             doSort(sortState.key, sortState.type);
-        } else {
-             renderTable(g_visibleStocks);
-        }
+        if(sortState.key) doSort(sortState.key, sortState.type);
+        else renderTable(g_visibleStocks);
     }
-
     let sortState = { key: '', dir: 'asc', type: '' };
-
     function sortTable(key, type) {
         document.querySelectorAll('.sort-icon').forEach(el => el.innerText = '');
-        
         if (sortState.key === key) sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
         else { sortState.key = key; sortState.dir = 'asc'; }
         sortState.type = type; 
-        
         const ths = document.querySelectorAll('thead th');
         ths.forEach(th => {
             const div = th.querySelector('.th-content');
@@ -412,11 +387,9 @@
                 th.querySelector('.sort-icon').innerText = sortState.dir === 'asc' ? ' ▲' : ' ▼';
             }
         });
-        
         doSort(key, type);
         renderTable(g_visibleStocks);
     }
-
     function doSort(key, type) {
         g_visibleStocks.sort((a, b) => {
             let valA = a[key];
@@ -432,7 +405,7 @@
         });
     }
 
-    // --- API 交互与图表 ---
+    // --- API 交互 ---
     function triggerRecalculate() {
         if(!confirm("确定补全吗？")) return;
         document.getElementById('recalcBtn').disabled = true;
@@ -452,32 +425,82 @@
         document.getElementById('refreshBtn').disabled = true;
         fetch('/api/trigger_crawl');
     }
+    
+    function stopTask() {
+        if(!confirm("确定要终止当前任务吗？")) return;
+        fetch('/api/stop_crawl', { method: 'POST' }).then(res => res.json()).then(data => {
+            alert(data.message);
+        });
+    }
+
     setInterval(() => {
         fetch('/api/status').then(res => res.json()).then(data => {
             const container = document.getElementById('progress-container');
+            const stopBtn = document.getElementById('stopBtn');
+            const refreshBtn = document.getElementById('refreshBtn');
+            const recalcBtn = document.getElementById('recalcBtn');
+
             if (data.is_running) {
                 container.style.display = 'block';
+                stopBtn.style.display = 'inline-block';
+                refreshBtn.disabled = true;
+                recalcBtn.disabled = true;
+                
                 const pct = data.total > 0 ? Math.round(data.current/data.total*100) : 0;
                 document.getElementById('progress-bar').style.width = pct + "%";
                 document.getElementById('progress-msg').innerText = `${data.message}`;
-            } else if (container.style.display === 'block') {
-                 location.reload();
+            } else {
+                if (container.style.display === 'block') {
+                     location.reload();
+                }
+                container.style.display = 'none';
+                stopBtn.style.display = 'none';
+                refreshBtn.disabled = false;
+                recalcBtn.disabled = false;
             }
         });
     }, 1500);
 
+    // --- 图表 ---
     var myChart = echarts.init(document.getElementById('chart-container'));
     var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
     document.getElementById('chartModal').addEventListener('shown.bs.modal', () => myChart.resize());
-    function loadChart(code) {
-        chartModal.show(); myChart.showLoading();
+
+    function loadChart(code, fieldKey, fieldLabel, suffix = '') {
+        chartModal.show(); 
+        myChart.showLoading();
+        
+        const stockName = g_stockData.find(s => s.code == code)?.name || code;
+        const title = `${stockName} - ${fieldLabel} 历史趋势`;
+        document.getElementById('chartTitle').innerText = title;
+
         fetch(`/api/history/${code}`).then(res => res.json()).then(data => {
             myChart.hideLoading();
-            myChart.setOption({
-                tooltip: { trigger: 'axis' }, legend: { data: ['PE', 'PEG'] }, xAxis: { data: data.dates },
-                yAxis: [ { type: 'value', name: 'PE' }, { type: 'value', name: 'PEG' } ],
-                series: [ { name: 'PE', type: 'line', data: data.pe }, { name: 'PEG', type: 'line', yAxisIndex: 1, data: data.peg } ]
+            
+            const dates = data.history.map(h => h.date);
+            const seriesData = data.history.map(h => {
+                let val = h[fieldKey];
+                if (typeof val === 'string') val = val.replace(/,/g, '');
+                return (val !== undefined && val !== null && val !== '') ? parseFloat(val) : null;
             });
+
+            myChart.setOption({
+                tooltip: { 
+                    trigger: 'axis',
+                    formatter: function (params) {
+                        let item = params[0];
+                        if(!item.value && item.value !== 0) return '';
+                        return `${item.axisValue}<br/>${item.marker} ${fieldLabel}: ${item.value}${suffix}`;
+                    }
+                }, 
+                legend: { data: [fieldLabel] }, 
+                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                xAxis: { type: 'category', data: dates },
+                yAxis: { type: 'value', name: fieldLabel, axisLabel: { formatter: `{value}${suffix}` } },
+                series: [ 
+                    { name: fieldLabel, type: 'line', data: seriesData, smooth: true } 
+                ]
+            }, true);
         });
     }
 </script>
