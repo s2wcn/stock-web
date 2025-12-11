@@ -2,21 +2,17 @@
 const g_stockData = window.g_stockData || [];
 const g_columns = window.g_columns || [];
 let g_visibleStocks = [...g_stockData]; 
+let g_templates = []; 
 
 // === 懒加载配置 ===
 const BATCH_SIZE = 500; // 每次加载 500 条
 let g_renderedCount = 0; // 当前已渲染条数
 
 document.addEventListener("DOMContentLoaded", function(){
-    // 1. 初始化渲染表格内容
     renderTable(g_stockData);
-
-    // 2. 修复表头 Tooltip
     document.querySelectorAll('thead [data-bs-toggle="tooltip"]').forEach(el => {
         new bootstrap.Tooltip(el, {html: true});
     });
-
-    // 3. 滚动监听实现懒加载
     const container = document.querySelector('.table-container');
     if (container) {
         container.addEventListener('scroll', function() {
@@ -38,8 +34,7 @@ function renderTable(data) {
     g_renderedCount = 0;    
     
     const tbody = document.getElementById('tableBody');
-    
-    document.querySelectorAll('#tableBody .info-icon').forEach(el => {
+    document.querySelectorAll('#tableBody [data-bs-toggle="tooltip"]').forEach(el => {
         const tooltip = bootstrap.Tooltip.getInstance(el);
         if (tooltip) tooltip.dispose();
     });
@@ -67,6 +62,12 @@ function renderNextBatch() {
     const tbody = document.getElementById('tableBody');
 
     const rowsHtml = batch.map(stock => {
+        // 获取“昨收”价格，用于计算折扣率
+        let closePrice = 0;
+        if (stock['昨收']) {
+            closePrice = parseFloat(String(stock['昨收']).replace(/,/g, ''));
+        }
+
         const colsHtml = g_columns.map(col => {
             let val = stock[col.key];
             if (val === undefined || val === null || val === '-' || val === '') {
@@ -91,6 +92,62 @@ function renderNextBatch() {
             if (isNegative) {
                 displayVal = `<span class="text-danger">${displayVal}</span>`;
             }
+
+            // === 估值与质量勋章逻辑 START ===
+            if (!isNaN(num)) {
+                let badge = '';
+
+                // 1. PEG: 0-0.5(极低), 0.5-1(低)
+                if (col.key === 'PEG') {
+                    if (num >= 0 && num < 0.5) {
+                        badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
+                    } else if (num >= 0.5 && num <= 1) {
+                        badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
+                    }
+                }
+                // 2. PEGY: 0-1(低)
+                else if (col.key === 'PEGY') {
+                    if (num >= 0 && num <= 1) {
+                        badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
+                    }
+                }
+                // 3. 价格 vs 价值 (合理股价 & 格雷厄姆数)
+                else if ((col.key === '合理股价' || col.key === '格雷厄姆数') && closePrice > 0 && num > 0) {
+                    let ratio = closePrice / num;
+
+                    if (col.key === '合理股价') {
+                        // 现价 < 50% 估值 -> 极低
+                        if (ratio < 0.5) {
+                            badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
+                        } 
+                        // 现价在 50% - 67% 估值之间 -> 低
+                        else if (ratio >= 0.5 && ratio <= 0.67) {
+                            badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
+                        }
+                    } 
+                    else if (col.key === '格雷厄姆数') {
+                        // 现价 < 70% 估值 -> 极低
+                        if (ratio < 0.7) {
+                            badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
+                        } 
+                        // 现价在 70% - 90% 估值之间 -> 低
+                        else if (ratio >= 0.7 && ratio <= 0.9) {
+                            badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
+                        }
+                    }
+                }
+                // 4. 净现比: >= 1 (优)
+                else if (col.key === '净现比') {
+                    if (num >= 1) {
+                        badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">优</span>`;
+                    }
+                }
+
+                if (badge) {
+                    displayVal += badge;
+                }
+            }
+            // === 估值与质量勋章逻辑 END ===
             
             if (col.no_chart) {
                 return `<td>${displayVal}</td>`;
@@ -99,20 +156,23 @@ function renderNextBatch() {
             }
         }).join('');
         
-        let nameContent = `<span class="text-truncate" style="max-width: 90px; display: inline-block; vertical-align: middle;">${stock.name}</span>`;
+        let nameContent = `<span class="text-truncate" style="max-width: 90px; display: inline-block; vertical-align: middle; cursor: default;" 
+                                 data-bs-toggle="tooltip" data-bs-placement="top" title="${escapeHtml(stock.name)}">
+                                 ${stock.name}
+                           </span>`;
         if (stock.intro) {
             nameContent += `<span class="info-icon ms-1" style="vertical-align: middle; cursor: help;" data-bs-toggle="tooltip" data-bs-placement="right" title="${escapeHtml(stock.intro)}">?</span>`;
         }
 
         let codeColor = stock.is_ggt ? 'text-danger' : 'text-primary';
-        let codeContent = `<span class="${codeColor}">${stock.code}</span>`;
+        let codeContent = `<a href="https://xueqiu.com/S/${stock.code}" target="_blank" class="${codeColor} stock-link fw-bold">${stock.code}</a>`;
         
         if (stock.is_ggt) {
             codeContent += `<span class="badge bg-primary ms-1 fw-normal" style="font-size: 10px; padding: 2px 4px; vertical-align: text-bottom;">通</span>`;
         }
 
         return `<tr>
-            <td class="sticky-col col-code fw-bold ps-2">${codeContent}</td>
+            <td class="sticky-col col-code ps-2">${codeContent}</td>
             <td class="sticky-col col-name fw-bold d-flex align-items-center justify-content-between">${nameContent}</td>
             <td class="text-muted small">${stock.date}</td>
             ${colsHtml}
@@ -122,7 +182,7 @@ function renderNextBatch() {
     tbody.insertAdjacentHTML('beforeend', rowsHtml);
     g_renderedCount += batch.length;
 
-    tbody.querySelectorAll('.info-icon').forEach(el => {
+    tbody.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
         if (!bootstrap.Tooltip.getInstance(el)) {
             new bootstrap.Tooltip(el, {html: true});
         }
@@ -140,7 +200,7 @@ function confirmFilter(btn, colKey) {
     activeFilters[colKey].min = minVal === "" ? null : parseFloat(minVal);
     activeFilters[colKey].max = maxVal === "" ? null : parseFloat(maxVal);
     updateHeaderStyle(colKey);
-    setTimeout(executeFiltering, 10);
+    setTimeout(executeFiltering, 10); 
     
     popup.style.display = 'none';
     setTimeout(() => {
@@ -167,7 +227,17 @@ function updateHeaderStyle(colKey) {
 }
 
 function executeFiltering() {
+    const searchVal = document.getElementById('globalSearchInput').value.trim().toLowerCase();
+
     const filteredData = g_stockData.filter(stock => {
+        if (searchVal) {
+            const code = String(stock.code).toLowerCase();
+            const name = String(stock.name).toLowerCase();
+            if (!code.includes(searchVal) && !name.includes(searchVal)) {
+                return false;
+            }
+        }
+
         for (const [key, range] of Object.entries(activeFilters)) {
             if (range.min === null && range.max === null) continue;
             let rawVal = stock[key];
@@ -246,14 +316,12 @@ function triggerCrawl() {
     document.getElementById('refreshBtn').disabled = true;
     fetch('/api/trigger_crawl');
 }
-
 function stopTask() {
     if(!confirm("确定要终止当前任务吗？")) return;
     fetch('/api/stop_crawl', { method: 'POST' }).then(res => res.json()).then(data => {
         alert(data.message);
     });
 }
-
 setInterval(() => {
     fetch('/api/status').then(res => res.json()).then(data => {
         const container = document.getElementById('progress-container');
@@ -282,7 +350,6 @@ setInterval(() => {
     });
 }, 1500);
 
-// --- 图表 ---
 var myChart = echarts.init(document.getElementById('chart-container'));
 var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
 document.getElementById('chartModal').addEventListener('shown.bs.modal', () => myChart.resize());
@@ -325,7 +392,7 @@ function loadChart(code, fieldKey, fieldLabel, suffix = '') {
     });
 }
 
-// === [新增] 定时任务设置逻辑 ===
+// === 定时任务设置逻辑 ===
 var scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
 
 function toggleWeekSelect() {
@@ -373,9 +440,7 @@ function saveSchedule() {
     
     fetch('/api/schedule', {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
             hour: hour, 
             minute: minute,
@@ -399,4 +464,288 @@ function saveSchedule() {
         btn.disabled = false;
         btn.innerText = originalText;
     });
+}
+
+// === 动态高级筛选逻辑 + 模版管理 ===
+var advFilterModal = new bootstrap.Modal(document.getElementById('advancedFilterModal'));
+
+function openAdvancedFilterModal() {
+    const listContainer = document.getElementById('activeFiltersList');
+    const select = document.getElementById('advFilterSelect');
+    
+    // 1. 初始化指标下拉
+    select.innerHTML = '';
+    g_columns.forEach(col => {
+        if (col.no_sort && col.key !== '昨收') return; 
+        let option = document.createElement('option');
+        option.value = col.key;
+        option.text = col.label;
+        select.appendChild(option);
+    });
+
+    // 2. 渲染已激活的筛选
+    listContainer.innerHTML = '';
+    let hasActive = false;
+    for (const [key, range] of Object.entries(activeFilters)) {
+        if (range.min !== null || range.max !== null) {
+            renderFilterRow(key, range.min, range.max);
+            hasActive = true;
+        }
+    }
+    document.getElementById('emptyTip').style.display = hasActive ? 'none' : 'block';
+
+    // 3. 加载模版列表
+    fetchTemplates();
+
+    advFilterModal.show();
+}
+
+function fetchTemplates() {
+    fetch('/api/templates')
+        .then(res => res.json())
+        .then(data => {
+            g_templates = data;
+            const select = document.getElementById('templateSelect');
+            select.innerHTML = '<option value="">-- 请选择 --</option>';
+            data.forEach(t => {
+                let opt = document.createElement('option');
+                opt.value = t.name;
+                opt.text = t.name;
+                select.appendChild(opt);
+            });
+        });
+}
+
+function loadSelectedTemplate() {
+    const name = document.getElementById('templateSelect').value;
+    if (!name) return;
+
+    const template = g_templates.find(t => t.name === name);
+    if (!template) return;
+
+    // 清空现有UI行
+    document.getElementById('activeFiltersList').innerHTML = '';
+    
+    if (Object.keys(template.filters).length > 0) {
+        document.getElementById('emptyTip').style.display = 'none';
+        for (const [key, range] of Object.entries(template.filters)) {
+            renderFilterRow(key, range.min, range.max);
+        }
+    } else {
+        document.getElementById('emptyTip').style.display = 'block';
+    }
+}
+
+function saveCurrentTemplate() {
+    const nameInput = document.getElementById('newTemplateName');
+    const name = nameInput.value.trim();
+    if (!name) {
+        alert("请输入模版名称");
+        return;
+    }
+
+    const filters = {};
+    const rows = document.querySelectorAll('.adv-filter-row');
+    rows.forEach(row => {
+        const key = row.getAttribute('data-key');
+        const minVal = row.querySelector('.adv-min').value;
+        const maxVal = row.querySelector('.adv-max').value;
+        if (minVal !== '' || maxVal !== '') {
+            filters[key] = {
+                min: minVal === "" ? null : parseFloat(minVal),
+                max: maxVal === "" ? null : parseFloat(maxVal)
+            };
+        }
+    });
+
+    if (Object.keys(filters).length === 0) {
+        alert("请先添加至少一个筛选条件");
+        return;
+    }
+
+    fetch('/api/templates', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name, filters: filters })
+    })
+    .then(res => res.json())
+    .then(data => {
+        if(data.success) {
+            alert("保存成功");
+            nameInput.value = '';
+            fetchTemplates(); 
+        } else {
+            alert("保存失败: " + data.message);
+        }
+    });
+}
+
+function deleteCurrentTemplate() {
+    const name = document.getElementById('templateSelect').value;
+    if (!name) {
+        alert("请先选择一个要删除的模版");
+        return;
+    }
+    if (!confirm(`确定要删除模版 "${name}" 吗？`)) return;
+
+    fetch(`/api/templates/${encodeURIComponent(name)}`, { method: 'DELETE' })
+        .then(res => res.json())
+        .then(data => {
+            if(data.success) {
+                alert("删除成功");
+                fetchTemplates();
+                document.getElementById('templateSelect').value = "";
+            } else {
+                alert("删除失败: " + data.message);
+            }
+        });
+}
+
+function addNewFilterRow() {
+    const select = document.getElementById('advFilterSelect');
+    const key = select.value;
+    if(!key) return;
+
+    const existingRow = document.querySelector(`.adv-filter-row[data-key="${key}"]`);
+    if(existingRow) {
+        existingRow.classList.add('bg-warning');
+        setTimeout(() => existingRow.classList.remove('bg-warning'), 500);
+        existingRow.scrollIntoView({behavior: 'smooth', block: 'center'});
+        return;
+    }
+
+    renderFilterRow(key, null, null);
+    document.getElementById('emptyTip').style.display = 'none';
+}
+
+function renderFilterRow(key, min, max) {
+    const container = document.getElementById('activeFiltersList');
+    const colDef = g_columns.find(c => c.key === key);
+    if (!colDef) return;
+
+    const rowHtml = `
+        <div class="card p-2 adv-filter-row shadow-sm border" data-key="${key}" style="transition: background 0.3s;">
+            <div class="d-flex align-items-center gap-2">
+                <div class="fw-bold text-primary" style="width: 120px;">${colDef.label}</div>
+                <div class="input-group input-group-sm flex-grow-1">
+                    <span class="input-group-text bg-white">Min</span>
+                    <input type="number" class="form-control adv-min" placeholder="最小值" value="${min !== null ? min : ''}">
+                    <span class="input-group-text bg-white">-</span>
+                    <span class="input-group-text bg-white">Max</span>
+                    <input type="number" class="form-control adv-max" placeholder="最大值" value="${max !== null ? max : ''}">
+                </div>
+                <button class="btn btn-close ms-2" onclick="removeFilterRow(this)"></button>
+            </div>
+        </div>
+    `;
+    container.insertAdjacentHTML('beforeend', rowHtml);
+}
+
+function removeFilterRow(btn) {
+    const row = btn.closest('.adv-filter-row');
+    row.remove();
+    const container = document.getElementById('activeFiltersList');
+    if(container.children.length === 0) {
+        document.getElementById('emptyTip').style.display = 'block';
+    }
+}
+
+function applyAdvancedFilter() {
+    for (const key in activeFilters) {
+        activeFilters[key] = { min: null, max: null };
+        updateHeaderStyle(key);
+    }
+
+    const rows = document.querySelectorAll('.adv-filter-row');
+    rows.forEach(row => {
+        const key = row.getAttribute('data-key');
+        const minInput = row.querySelector('.adv-min');
+        const maxInput = row.querySelector('.adv-max');
+        
+        const minVal = minInput.value;
+        const maxVal = maxInput.value;
+
+        if (minVal !== '' || maxVal !== '') {
+            if (!activeFilters[key]) activeFilters[key] = {};
+            activeFilters[key].min = minVal === "" ? null : parseFloat(minVal);
+            activeFilters[key].max = maxVal === "" ? null : parseFloat(maxVal);
+            
+            updateHeaderStyle(key);
+            
+            const headerPopup = document.querySelector(`th[data-key="${key}"] .filter-popup`);
+            if (headerPopup) {
+                headerPopup.querySelector(`#min-${CSS.escape(key)}`).value = minVal;
+                headerPopup.querySelector(`#max-${CSS.escape(key)}`).value = maxVal;
+            }
+        }
+    });
+
+    executeFiltering(); 
+    advFilterModal.hide(); 
+}
+
+function clearAllFilters() {
+    document.getElementById('globalSearchInput').value = '';
+    
+    for (const key in activeFilters) {
+        activeFilters[key] = { min: null, max: null };
+        updateHeaderStyle(key); 
+        
+        const headerPopup = document.querySelector(`th[data-key="${key}"] .filter-popup`);
+        if (headerPopup) {
+            headerPopup.querySelector(`#min-${CSS.escape(key)}`).value = '';
+            headerPopup.querySelector(`#max-${CSS.escape(key)}`).value = '';
+        }
+    }
+
+    document.getElementById('activeFiltersList').innerHTML = '';
+    document.getElementById('emptyTip').style.display = 'block';
+
+    executeFiltering();
+    advFilterModal.hide(); 
+}
+
+// 导出到剪贴板功能
+function exportToClipboard() {
+    if (!g_visibleStocks || g_visibleStocks.length === 0) {
+        alert("当前列表中没有数据可导出！");
+        return;
+    }
+
+    const textToCopy = g_visibleStocks.map(stock => `${stock.code}\t${stock.name}`).join('\n');
+
+    if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(textToCopy).then(() => {
+            alert(`✅ 已成功复制 ${g_visibleStocks.length} 条数据到剪贴板！\n格式：代码 + Tab + 名称`);
+        }).catch(err => {
+            console.error('Clipboard API failed:', err);
+            fallbackCopy(textToCopy);
+        });
+    } else {
+        fallbackCopy(textToCopy);
+    }
+}
+
+function fallbackCopy(text) {
+    const textArea = document.createElement("textarea");
+    textArea.value = text;
+    textArea.style.position = "fixed"; 
+    textArea.style.left = "-9999px";
+    document.body.appendChild(textArea);
+    textArea.focus();
+    textArea.select();
+
+    try {
+        const successful = document.execCommand('copy');
+        if (successful) {
+            alert(`✅ 已成功复制 ${g_visibleStocks.length} 条数据到剪贴板！\n(兼容模式)`);
+        } else {
+            alert("❌ 复制失败，请重试");
+        }
+    } catch (err) {
+        console.error('Fallback copy failed:', err);
+        alert("❌ 浏览器不支持自动复制，请手动操作");
+    }
+
+    document.body.removeChild(textArea);
 }

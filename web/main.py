@@ -14,7 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 
 # 引入数据库集合
-from database import stock_collection, config_collection
+from database import stock_collection, config_collection, template_collection
 import crawler_hk as crawler
 from crawler_state import status 
 
@@ -83,10 +83,10 @@ def recalculate_db_task():
             roa = get_f(['总资产回报率(%)', 'ROA'])
             net_margin = get_f(['销售净利率(%)', '销售净利率'])
 
-            # 清除旧指标
+            # [修改] 清除旧指标，包括旧的“彼得林奇估值”
             derived_keys = [
                 'PEG', 'PEGY', '彼得林奇估值', '净现比', '市现率', 
-                '财务杠杆', '总资产周转率', '格雷厄姆数'
+                '财务杠杆', '总资产周转率', '格雷厄姆数', '合理股价'
             ]
             for key in derived_keys:
                 item.pop(key, None)
@@ -100,8 +100,13 @@ def recalculate_db_task():
                 if total_return > 0:
                     item['PEGY'] = round(pe / total_return, 4)
             
-            if growth is not None and div_yield is not None:
-                item['彼得林奇估值'] = round(growth + div_yield, 2)
+            # [修改] 改为计算合理股价 (格雷厄姆成长公式)
+            # 公式: EPS * (8.5 + 2 * G)
+            if eps is not None and growth is not None:
+                # 假设 growth 为百分比数值（如 15 代表 15%），格雷厄姆公式通常直接用这个数值
+                fair_price = eps * (8.5 + 2 * growth)
+                if fair_price > 0:
+                    item['合理股价'] = round(fair_price, 2)
             
             if ocf_ps is not None and eps and eps > 0:
                 item['净现比'] = round(ocf_ps / eps, 2)
@@ -132,7 +137,6 @@ def recalculate_db_task():
     status.finish("全库清洗重算完成")
     print("✅ 全库清洗重算完成")
 
-# === [修改] 辅助函数：更新调度器 ===
 def update_scheduler_job(config: dict):
     try:
         hour = config.get('hour', 17)
@@ -140,18 +144,14 @@ def update_scheduler_job(config: dict):
         sched_type = config.get('type', 'daily')
         day_of_week = config.get('day_of_week', '5') # 0=Mon, 6=Sun
 
-        # 先移除旧任务
         if scheduler.get_job('crawler_job'):
             scheduler.remove_job('crawler_job')
         
-        # 根据类型添加新任务
         if sched_type == 'weekly':
-            # APScheduler day_of_week: 0=Mon, 6=Sun
             trigger = CronTrigger(day_of_week=int(day_of_week), hour=hour, minute=minute)
             week_map = ["一", "二", "三", "四", "五", "六", "日"]
             desc = f"每周{week_map[int(day_of_week)]}"
         else:
-            # 默认为 daily
             trigger = CronTrigger(hour=hour, minute=minute)
             desc = "每天"
 
@@ -253,14 +253,15 @@ COLUMN_CONFIG = [
             "<b>【适配】</b> 兼具成长与分红的成熟企业（如格力、神华）。"
         )
     },
+    # [修改] 将彼得林奇值改为合理股价
     {
-        "key": "彼得林奇估值", "label": "彼得林奇值", 
-        "desc": "林奇公允PE", 
+        "key": "合理股价", "label": "合理股价", 
+        "desc": "格雷厄姆估值", 
         "tip": (
-            "<b>【公式】</b> 净利增长率 + 股息率<br>"
-            "<b>【原理】</b> 合理PE值应等于其(成长率+股息率)。<br>"
-            "<b>【评价】</b> 若此数值 > 现价PE的1.5倍，则低估。<br>"
-            "<b>【适配】</b> 稳健增长型股票。"
+            "<b>【公式】</b> EPS × (8.5 + 2 × 盈利增长率)<br>"
+            "<b>【原理】</b> 本杰明·格雷厄姆提出的成长股估值公式。<br>"
+            "<b>【评价】</b> 若现价 < 合理股价，则具有安全边际。<br>"
+            "<b>【适配】</b> 盈利稳定的成长型企业。"
         )
     },
     {
@@ -459,7 +460,7 @@ async def restart_service(background_tasks: BackgroundTasks):
     background_tasks.add_task(restart_program)
     return {"success": True, "message": "服务正在重载，页面将在 3 秒后刷新..."}
 
-# === [新增] 定时任务相关 API ===
+# === 定时任务 API ===
 
 @app.get("/api/schedule")
 async def get_schedule():
@@ -497,20 +498,53 @@ async def set_schedule(data: dict = Body(...)):
         "minute": minute
     }
 
-    # 1. 存入数据库
     config_collection.update_one(
         {"_id": "schedule_config"},
         {"$set": new_config},
         upsert=True
     )
     
-    # 2. 动态更新调度器
     if update_scheduler_job(new_config):
         week_map = ["一", "二", "三", "四", "五", "六", "日"]
         desc = f"每天 {hour:02d}:{minute:02d}" if sched_type == 'daily' else f"每周{week_map[int(day_of_week)]} {hour:02d}:{minute:02d}"
         return {"success": True, "message": f"定时任务已更新: {desc}"}
     else:
         return {"success": False, "message": "调度器更新失败"}
+
+# === [新增] 筛选模版 API ===
+
+@app.get("/api/templates")
+async def get_templates():
+    # 返回所有模版，按名称排序
+    cursor = template_collection.find({}, {"_id": 0}).sort("name", 1)
+    return list(cursor)
+
+@app.post("/api/templates")
+async def save_template(data: dict = Body(...)):
+    """保存筛选模版"""
+    name = data.get("name")
+    filters = data.get("filters")
+    if not name or not name.strip():
+        return {"success": False, "message": "模版名称不能为空"}
+    if not filters:
+        return {"success": False, "message": "模版内容不能为空"}
+    
+    # 按名称覆盖保存
+    template_collection.replace_one(
+        {"name": name.strip()}, 
+        {"name": name.strip(), "filters": filters}, 
+        upsert=True
+    )
+    return {"success": True, "message": "模版已保存"}
+
+@app.delete("/api/templates/{name}")
+async def delete_template(name: str):
+    """删除筛选模版"""
+    result = template_collection.delete_one({"name": name})
+    if result.deleted_count > 0:
+        return {"success": True, "message": "模版已删除"}
+    else:
+        return {"success": False, "message": "模版不存在"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

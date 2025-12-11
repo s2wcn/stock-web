@@ -328,8 +328,12 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
                 if total_return > 0:
                     new_data['PEGY'] = round(pe / total_return, 4)
 
-            if growth is not None and dividend_yield is not None:
-                new_data['彼得林奇估值'] = round(growth + dividend_yield, 2)
+            # [修改] 计算合理股价 (原彼得林奇估值)
+            # EPS × (8.5 + 2 × G)
+            if growth is not None and eps is not None:
+                fair_price = eps * (8.5 + 2 * growth)
+                if fair_price > 0:
+                    new_data['合理股价'] = round(fair_price, 2)
 
             if ocf_ps is not None and eps is not None and eps > 0:
                 new_data['净现比'] = round(ocf_ps / eps, 2)

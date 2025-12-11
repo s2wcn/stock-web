@@ -13,8 +13,11 @@ html, body {
     padding: 12px 24px; 
     background-color: #ffffff;
     border-bottom: 1px solid #e1e4e8; 
-    z-index: 2000;
+    /* [修改] 降低层级：从 2000 改为 1020 */
+    /* 原因：必须高于表头(1002)，但要低于 Bootstrap 模态框(1055) */
+    z-index: 1020;
     box-shadow: 0 2px 8px rgba(0,0,0,0.03); 
+    position: relative; /* 确保 z-index 生效 */
 }
 
 /* === 3. 表格容器 === */
@@ -115,3 +118,7 @@ thead th:last-child .filter-popup { left: auto; right: 0; }
 #chart-container { height: 500px; width: 100%; }
 .tooltip-inner { max-width: 300px !important; text-align: left !important; }
 .tooltip { z-index: 10000 !important; }
+
+/* [新增] 股票链接样式 */
+.stock-link { text-decoration: none; transition: color 0.15s; }
+.stock-link:hover { text-decoration: underline !important; opacity: 0.8; }
