@@ -4,18 +4,29 @@ import sys
 import os
 import time
 import math
-from fastapi import FastAPI, Request, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks, Body
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 
-from database import stock_collection
-import crawler
+# 引入数据库集合
+from database import stock_collection, config_collection
+import crawler_hk as crawler
 from crawler_state import status 
 
 scheduler = BackgroundScheduler()
+
+# [修改] 默认定时配置
+DEFAULT_SCHEDULE = {
+    "type": "daily",      # daily / weekly
+    "day_of_week": "5",   # 0-6 (周一到周日), 默认周六
+    "hour": 17, 
+    "minute": 0
+}
 
 def dynamic_task_wrapper():
     if not status.is_running:
@@ -121,18 +132,57 @@ def recalculate_db_task():
     status.finish("全库清洗重算完成")
     print("✅ 全库清洗重算完成")
 
+# === [修改] 辅助函数：更新调度器 ===
+def update_scheduler_job(config: dict):
+    try:
+        hour = config.get('hour', 17)
+        minute = config.get('minute', 0)
+        sched_type = config.get('type', 'daily')
+        day_of_week = config.get('day_of_week', '5') # 0=Mon, 6=Sun
+
+        # 先移除旧任务
+        if scheduler.get_job('crawler_job'):
+            scheduler.remove_job('crawler_job')
+        
+        # 根据类型添加新任务
+        if sched_type == 'weekly':
+            # APScheduler day_of_week: 0=Mon, 6=Sun
+            trigger = CronTrigger(day_of_week=int(day_of_week), hour=hour, minute=minute)
+            week_map = ["一", "二", "三", "四", "五", "六", "日"]
+            desc = f"每周{week_map[int(day_of_week)]}"
+        else:
+            # 默认为 daily
+            trigger = CronTrigger(hour=hour, minute=minute)
+            desc = "每天"
+
+        scheduler.add_job(dynamic_task_wrapper, trigger, id='crawler_job')
+        print(f"⏰ 定时任务已更新为: {desc} {hour:02d}:{minute:02d}")
+        return True
+    except Exception as e:
+        print(f"❌ 更新定时任务失败: {e}")
+        return False
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler.add_job(dynamic_task_wrapper, 'cron', hour=17, minute=0, id='crawler_job')
-    print("⏰ MongoDB 爬虫调度已启动...")
+    # 1. 读取数据库配置
+    config = config_collection.find_one({"_id": "schedule_config"})
+    if not config:
+        config = DEFAULT_SCHEDULE
+        config_collection.insert_one({"_id": "schedule_config", **DEFAULT_SCHEDULE})
+    
+    # 2. 启动调度器
+    update_scheduler_job(config)
     scheduler.start()
+    
     yield
     scheduler.shutdown()
 
 app = FastAPI(lifespan=lifespan)
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# === 字段配置 (包含详细 Tooltip + 适配说明) ===
+# === 字段配置 ===
 COLUMN_CONFIG = [
     # 0. 静态
     {
@@ -140,6 +190,38 @@ COLUMN_CONFIG = [
         "desc": "公司所属行业板块", "tip": "按东财/GICS分类标准划分",
         "no_sort": True, "no_chart": True
     },
+    
+    # 0.5 行情 (新增)
+    {
+        "key": "昨收", "label": "昨收", 
+        "desc": "最新收盘价", "tip": "最近一个交易日的收盘价格", 
+        "no_chart": False
+    },
+    {
+        "key": "昨涨跌幅", "label": "涨跌%", 
+        "desc": "日涨跌幅", "tip": "最近一个交易日的涨跌百分比", 
+        "suffix": "%"
+    },
+    {
+        "key": "昨成交量", "label": "成交量", 
+        "desc": "日成交量(股)", "tip": "最近一个交易日的成交股数", 
+    },
+    {
+        "key": "昨换手率", "label": "换手%", 
+        "desc": "交易活跃度", "tip": "成交量 ÷ 流通股本", 
+        "suffix": "%"
+    },
+    {
+        "key": "近一周涨跌幅", "label": "周涨跌%", 
+        "desc": "短期动量", "tip": "当前价格相比5个交易日前的涨跌幅。<br><b>【用途】</b> 判断短期趋势。", 
+        "suffix": "%"
+    },
+    {
+        "key": "近一月涨跌幅", "label": "月涨跌%", 
+        "desc": "中期动量", "tip": "当前价格相比20个交易日前的涨跌幅。<br><b>【用途】</b> 判断中期趋势。", 
+        "suffix": "%"
+    },
+
     # 1. 估值
     {
         "key": "市盈率", "label": "市盈率(PE)", 
@@ -376,6 +458,59 @@ def restart_program():
 async def restart_service(background_tasks: BackgroundTasks):
     background_tasks.add_task(restart_program)
     return {"success": True, "message": "服务正在重载，页面将在 3 秒后刷新..."}
+
+# === [新增] 定时任务相关 API ===
+
+@app.get("/api/schedule")
+async def get_schedule():
+    """获取当前定时配置"""
+    config = config_collection.find_one({"_id": "schedule_config"})
+    if not config:
+        config = DEFAULT_SCHEDULE
+    
+    # 确保字段齐全
+    if "type" not in config: config["type"] = "daily"
+    if "day_of_week" not in config: config["day_of_week"] = "5"
+    
+    return {
+        "type": config.get("type"),
+        "day_of_week": config.get("day_of_week"),
+        "hour": config.get("hour"),
+        "minute": config.get("minute")
+    }
+
+@app.post("/api/schedule")
+async def set_schedule(data: dict = Body(...)):
+    """保存并更新定时配置"""
+    hour = int(data.get("hour"))
+    minute = int(data.get("minute"))
+    sched_type = data.get("type", "daily")
+    day_of_week = str(data.get("day_of_week", "5"))
+    
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        return {"success": False, "message": "时间格式不正确"}
+
+    new_config = {
+        "type": sched_type,
+        "day_of_week": day_of_week,
+        "hour": hour,
+        "minute": minute
+    }
+
+    # 1. 存入数据库
+    config_collection.update_one(
+        {"_id": "schedule_config"},
+        {"$set": new_config},
+        upsert=True
+    )
+    
+    # 2. 动态更新调度器
+    if update_scheduler_job(new_config):
+        week_map = ["一", "二", "三", "四", "五", "六", "日"]
+        desc = f"每天 {hour:02d}:{minute:02d}" if sched_type == 'daily' else f"每周{week_map[int(day_of_week)]} {hour:02d}:{minute:02d}"
+        return {"success": True, "message": f"定时任务已更新: {desc}"}
+    else:
+        return {"success": False, "message": "调度器更新失败"}
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

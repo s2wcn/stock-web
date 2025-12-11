@@ -1,0 +1,117 @@
+/* === 1. 布局基础 === */
+html, body { 
+    height: 100%; 
+    overflow: hidden; 
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    background-color: #f5f7fa !important; 
+}
+.main-wrapper { height: 100%; display: flex; flex-direction: column; }
+
+/* === 2. 顶部工具栏 === */
+.toolbar-section {
+    flex-shrink: 0; 
+    padding: 12px 24px; 
+    background-color: #ffffff;
+    border-bottom: 1px solid #e1e4e8; 
+    z-index: 2000;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.03); 
+}
+
+/* === 3. 表格容器 === */
+.table-container {
+    flex-grow: 1; 
+    overflow: auto; 
+    padding: 0; 
+    position: relative;
+    background: #fff;
+}
+.table { margin-bottom: 0; }
+
+/* === 4. 表头美化 === */
+thead th { 
+    position: sticky; 
+    top: 0; 
+    z-index: 1000;
+    background-color: #f8f9fa !important; 
+    border-bottom: 2px solid #e9ecef !important;
+    border-top: none !important;
+    border-left: none !important;
+    border-right: none !important; 
+    padding: 8px 0; 
+    height: auto;
+    vertical-align: middle; 
+    background-clip: padding-box;
+    box-shadow: 0 1px 0 #e9ecef;
+    min-width: 100px; 
+}
+
+/* === 5. 冻结列核心样式 === */
+.sticky-col { position: sticky !important; z-index: 101; border-bottom: 1px solid #f1f3f5; }
+tbody td.sticky-col { background-color: #fff !important; }
+thead th.sticky-col { z-index: 1002 !important; background-color: #f8f9fa !important; }
+.table-hover tbody tr:hover td.sticky-col { background-color: #f1f8ff !important; }
+
+/* [修改] 宽度进一步缩小至 85px */
+.col-code { 
+    left: 0; 
+    width: 85px; min-width: 85px; max-width: 85px; 
+    border-right: 1px solid #f1f3f5; 
+}
+
+/* [修改] 第二列跟随左移至 85px */
+.col-name { 
+    left: 85px; 
+    width: 120px; min-width: 120px; max-width: 120px; 
+    border-right: 1px solid #e1e4e8 !important; 
+    box-shadow: 4px 0 8px -4px rgba(0,0,0,0.1); 
+}
+
+/* === 单元格样式 === */
+.clickable-cell { cursor: pointer; transition: background-color 0.1s; }
+.clickable-cell:hover { background-color: #e2e6ea !important; box-shadow: inset 0 0 0 1px #ced4da; }
+
+/* === 6. 表头内容美化 === */
+.th-content {
+    padding: 0 12px; display: flex; align-items: center; justify-content: space-between; 
+    width: 100%; min-height: 32px; cursor: pointer; position: relative;
+    color: #495057; font-weight: 600; font-size: 13px; transition: background-color 0.2s;
+}
+.th-content > span:first-child {
+    display: inline-block; white-space: normal; min-width: 5em; max-width: 9.5em; line-height: 1.35; text-align: left;
+}
+.th-content:hover { background-color: #eef1f6; color: #0d6efd; }
+.th-no-sort { cursor: default !important; }
+.th-no-sort:hover { background-color: transparent !important; color: #495057 !important; }
+
+/* === 7. 图标与交互 === */
+.sort-icon { font-size: 10px; color: #adb5bd; margin-left: 4px; opacity: 0.5; transition: all 0.2s; white-space: nowrap; flex-shrink: 0; }
+.th-content:hover .sort-icon { opacity: 1; color: #0d6efd; }
+.info-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px; border-radius: 50%; background-color: rgba(173, 181, 189, 0.3); 
+    color: #6c757d; font-size: 10px; margin-left: 4px; cursor: help; transition: all 0.2s; flex-shrink: 0; 
+}
+.info-icon:hover { background-color: #0d6efd; color: white; }
+
+.filter-active .th-content { background-color: #e8f2ff; color: #0d6efd; border-bottom: 2px solid #0d6efd; }
+.filter-active .sort-icon { color: #0d6efd; opacity: 1; }
+
+.filter-popup {
+    display: none; position: absolute; top: 100%; left: 0; min-width: 220px; background: white;
+    border: 1px solid rgba(0,0,0,0.1); box-shadow: 0 8px 24px rgba(0,0,0,0.12); border-radius: 6px; padding: 16px; z-index: 1050; cursor: default; font-size: 13px;
+}
+thead th:hover .filter-popup, .filter-popup:hover { display: block; }
+thead th:last-child .filter-popup { left: auto; right: 0; }
+
+.filter-input-group { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+.filter-input { width: 80px; font-size: 13px; padding: 6px; border-color: #dee2e6; background: #f8f9fa; }
+.filter-input:focus { background: #fff; border-color: #86b7fe; box-shadow: none; }
+.filter-label { font-size: 12px; color: #868e96; margin-bottom: 6px; display: block; font-weight: 500;}
+
+.table-nowrap td { white-space: nowrap; vertical-align: middle; padding: 10px 16px; font-size: 13px; color: #212529; border-bottom: 1px solid #f1f3f5; }
+.table-hover tbody tr:hover { background-color: #f1f8ff; } 
+.fw-bold { font-weight: 600 !important; color: #343a40; }
+
+#chart-container { height: 500px; width: 100%; }
+.tooltip-inner { max-width: 300px !important; text-align: left !important; }
+.tooltip { z-index: 10000 !important; }

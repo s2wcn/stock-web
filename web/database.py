@@ -9,5 +9,6 @@ DB_NAME = "stock_system"
 client = MongoClient(MONGO_URI)
 db = client[DB_NAME]
 stock_collection = db["stocks"]
+config_collection = db["system_config"] # [新增] 配置集合
 
 print(f"✅ 已连接 MongoDB: {DB_NAME}")
