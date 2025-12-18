@@ -4,6 +4,10 @@ import sys
 import os
 import time
 import math
+import random
+import pandas as pd
+import numpy as np
+from scipy import stats  # 需 pip install scipy
 from fastapi import FastAPI, Request, BackgroundTasks, Body
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
@@ -13,6 +17,8 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
 
+import akshare as ak
+
 # 引入数据库集合
 from database import stock_collection, config_collection, template_collection
 import crawler_hk as crawler
@@ -20,13 +26,15 @@ from crawler_state import status
 
 scheduler = BackgroundScheduler()
 
-# [修改] 默认定时配置
+# 默认定时配置
 DEFAULT_SCHEDULE = {
-    "type": "daily",      # daily / weekly
-    "day_of_week": "5",   # 0-6 (周一到周日), 默认周六
+    "type": "daily",      
+    "day_of_week": "5",   
     "hour": 17, 
     "minute": 0
 }
+
+# === 任务逻辑区域 ===
 
 def dynamic_task_wrapper():
     if not status.is_running:
@@ -49,7 +57,6 @@ def recalculate_db_task():
     for i, doc in enumerate(all_docs):
         if status.should_stop:
             status.finish("补全任务已终止")
-            print("🛑 补全任务由用户终止")
             return
 
         code = doc["_id"]
@@ -63,6 +70,7 @@ def recalculate_db_task():
         latest_record = {}
 
         for item in history:
+            # 辅助取值函数
             def get_f(keys):
                 for k in keys:
                     val = item.get(k)
@@ -83,7 +91,7 @@ def recalculate_db_task():
             roa = get_f(['总资产回报率(%)', 'ROA'])
             net_margin = get_f(['销售净利率(%)', '销售净利率'])
 
-            # [修改] 清除旧指标，包括旧的“彼得林奇估值”
+            # 清除旧指标
             derived_keys = [
                 'PEG', 'PEGY', '彼得林奇估值', '净现比', '市现率', 
                 '财务杠杆', '总资产周转率', '格雷厄姆数', '合理股价'
@@ -91,7 +99,7 @@ def recalculate_db_task():
             for key in derived_keys:
                 item.pop(key, None)
 
-            # 重新计算
+            # 重新计算逻辑
             if pe and pe > 0 and growth and growth != 0:
                 item['PEG'] = round(pe / growth, 4)
 
@@ -100,10 +108,8 @@ def recalculate_db_task():
                 if total_return > 0:
                     item['PEGY'] = round(pe / total_return, 4)
             
-            # [修改] 改为计算合理股价 (格雷厄姆成长公式)
-            # 公式: EPS * (8.5 + 2 * G)
+            # 合理股价 (格雷厄姆成长公式)
             if eps is not None and growth is not None:
-                # 假设 growth 为百分比数值（如 15 代表 15%），格雷厄姆公式通常直接用这个数值
                 fair_price = eps * (8.5 + 2 * growth)
                 if fair_price > 0:
                     item['合理股价'] = round(fair_price, 2)
@@ -137,6 +143,107 @@ def recalculate_db_task():
     status.finish("全库清洗重算完成")
     print("✅ 全库清洗重算完成")
 
+# === [修改] 长牛趋势分析逻辑 (5年分级版) ===
+def analyze_trend_task():
+    print("🚀 开始执行【5年长牛分级筛选】任务...")
+    
+    cursor = stock_collection.find({}, {"_id": 1, "name": 1})
+    all_stocks = list(cursor)
+    total = len(all_stocks)
+    
+    status.start(total)
+    status.message = "正在初始化趋势分析..."
+    
+    DAYS_PER_YEAR = 250        # 一年的交易日近似值
+    MIN_R_SQUARED = 0.80       # 拟合度阈值
+    # 年化收益阈值：10% - 60%
+    MIN_ANNUAL_RETURN = 10.0   
+    MAX_ANNUAL_RETURN = 60.0   
+
+    for i, doc in enumerate(all_stocks):
+        if status.should_stop:
+            status.finish("趋势分析已终止")
+            return
+
+        code = doc["_id"]
+        name = doc.get("name", "Unknown")
+        status.update(i + 1, message=f"正在分析趋势: {name}")
+
+        try:
+            # 1. 获取尽可能长的历史数据 (前复权)
+            # 假设 akshare 接口返回足够长的数据，或者返回全部数据
+            df = ak.stock_hk_daily(symbol=code, adjust="qfq")
+            
+            bull_label = None  # 结果标签：长牛5年 / 长牛4年 ...
+            trend_data = {}    # 存储匹配周期的具体指标
+
+            if df is not None and not df.empty:
+                # 2. 倒序循环：5年 -> 4年 -> ... -> 1年
+                # 只要匹配到最长的，就 break
+                for year in [5, 4, 3, 2, 1]:
+                    required_days = year * DAYS_PER_YEAR
+                    
+                    # 数据长度检查（允许20%的缺失）
+                    if len(df) < required_days * 0.8:
+                        continue
+                    
+                    # 截取对应时间段
+                    df_subset = df.iloc[-required_days:].copy()
+                    y_data = df_subset['close'].astype(float).values
+                    
+                    # 数据有效性检查
+                    if np.any(y_data <= 0):
+                        continue
+                        
+                    x_data = np.arange(len(y_data))
+                    log_y_data = np.log(y_data)
+                    
+                    # 线性回归
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, log_y_data)
+                    
+                    r_squared = r_value ** 2
+                    annualized_return = (np.exp(slope * DAYS_PER_YEAR) - 1) * 100
+                    
+                    # 判定标准
+                    if (r_squared >= MIN_R_SQUARED and 
+                        slope > 0 and 
+                        MIN_ANNUAL_RETURN <= annualized_return <= MAX_ANNUAL_RETURN):
+                        
+                        bull_label = f"长牛{year}年"
+                        trend_data = {
+                            "r_squared": round(r_squared, 4),
+                            "annual_return_pct": round(annualized_return, 2),
+                            "slope": round(slope, 6),
+                            "period_years": year,
+                            "updated_at": datetime.now()
+                        }
+                        # 找到符合的最长年份，跳出循环
+                        break 
+
+            # 更新数据库
+            update_fields = {
+                "bull_label": bull_label,       # 新字段: 存储评级字符串
+                "trend_analysis": trend_data    # 存储对应评级的详细数据
+            }
+            # 清理旧字段 (可选)
+            # update_fields["is_slow_bull"] = None 
+
+            stock_collection.update_one(
+                {"_id": code},
+                {"$set": update_fields}
+            )
+            
+            # 随机延时防封
+            time.sleep(random.uniform(0.5, 1.0))
+            
+        except Exception as e:
+            print(f"⚠️ 分析 {code} 失败: {e}")
+            continue
+
+    status.finish("趋势分析完成")
+    print("✅ 趋势分析任务结束")
+
+# === 调度器逻辑 ===
 def update_scheduler_job(config: dict):
     try:
         hour = config.get('hour', 17)
@@ -164,13 +271,11 @@ def update_scheduler_job(config: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 1. 读取数据库配置
     config = config_collection.find_one({"_id": "schedule_config"})
     if not config:
         config = DEFAULT_SCHEDULE
         config_collection.insert_one({"_id": "schedule_config", **DEFAULT_SCHEDULE})
     
-    # 2. 启动调度器
     update_scheduler_job(config)
     scheduler.start()
     
@@ -182,7 +287,7 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# === 字段配置 ===
+# === 字段配置 (修改了趋势相关字段) ===
 COLUMN_CONFIG = [
     # 0. 静态
     {
@@ -191,7 +296,24 @@ COLUMN_CONFIG = [
         "no_sort": True, "no_chart": True
     },
     
-    # 0.5 行情 (新增)
+    # [修改] 长牛分级结果
+    {
+        "key": "bull_label", "label": "长牛评级", 
+        "desc": "长牛分级筛选", "tip": "基于过去1-5年走势算法筛选。<br>R²>0.8 且 年化10%-60%<br><b>取符合条件的最长时间段</b>", 
+        "no_chart": True
+    },
+    {
+        "key": "trend_analysis.r_squared", "label": "趋势R²", 
+        "desc": "对应周期的拟合度", "tip": "股价走势越接近直线，该值越接近1。<br><b>>0.8</b> 表示极度平稳。", 
+        "no_chart": True
+    },
+    {
+        "key": "trend_analysis.annual_return_pct", "label": "年化%", 
+        "desc": "对应周期的年化收益", "tip": "基于回归斜率推算的年化涨幅。", 
+        "suffix": "%", "no_chart": True
+    },
+
+    # 0.5 行情
     {
         "key": "昨收", "label": "昨收", 
         "desc": "最新收盘价", "tip": "最近一个交易日的收盘价格", 
@@ -213,12 +335,12 @@ COLUMN_CONFIG = [
     },
     {
         "key": "近一周涨跌幅", "label": "周涨跌%", 
-        "desc": "短期动量", "tip": "当前价格相比5个交易日前的涨跌幅。<br><b>【用途】</b> 判断短期趋势。", 
+        "desc": "短期动量", "tip": "当前价格相比5个交易日前的涨跌幅", 
         "suffix": "%"
     },
     {
         "key": "近一月涨跌幅", "label": "月涨跌%", 
-        "desc": "中期动量", "tip": "当前价格相比20个交易日前的涨跌幅。<br><b>【用途】</b> 判断中期趋势。", 
+        "desc": "中期动量", "tip": "当前价格相比20个交易日前的涨跌幅", 
         "suffix": "%"
     },
 
@@ -226,139 +348,84 @@ COLUMN_CONFIG = [
     {
         "key": "市盈率", "label": "市盈率(PE)", 
         "desc": "回本年限", 
-        "tip": (
-            "<b>【公式】</b> 股价 ÷ 每股收益<br>"
-            "<b>【原理】</b> 投资回本需要的年限。<br>"
-            "<b>【评价】</b> 越低越好，但需警惕'价值陷阱'。<br>"
-            "<b>【适配】</b> 盈利稳定的消费、医药、公用事业股。<b>不适合</b>亏损股或周期股。"
-        )
+        "tip": "股价 ÷ 每股收益"
     },
     {
         "key": "PEG", "label": "PEG", 
         "desc": "成长估值比", 
-        "tip": (
-            "<b>【公式】</b> PE ÷ (净利增长率 × 100)<br>"
-            "<b>【原理】</b> 弥补PE无法反映成长性的缺陷。<br>"
-            "<b>【评价】</b> < 1 低估；1-2 合理；> 2 高估。<br>"
-            "<b>【适配】</b> 快速成长的科技、新能源、生物医药股。"
-        )
+        "tip": "PE ÷ (净利增长率 × 100)"
     },
     {
         "key": "PEGY", "label": "PEGY", 
         "desc": "股息修正PEG", 
-        "tip": (
-            "<b>【公式】</b> PE ÷ (净利增长率 + 股息率)<br>"
-            "<b>【原理】</b> 将股息视为成长的一部分，对高分红股更公平。<br>"
-            "<b>【评价】</b> < 1 极具吸引力。<br>"
-            "<b>【适配】</b> 兼具成长与分红的成熟企业（如格力、神华）。"
-        )
+        "tip": "PE ÷ (净利增长率 + 股息率)"
     },
-    # [修改] 将彼得林奇值改为合理股价
     {
         "key": "合理股价", "label": "合理股价", 
         "desc": "格雷厄姆估值", 
-        "tip": (
-            "<b>【公式】</b> EPS × (8.5 + 2 × 盈利增长率)<br>"
-            "<b>【原理】</b> 本杰明·格雷厄姆提出的成长股估值公式。<br>"
-            "<b>【评价】</b> 若现价 < 合理股价，则具有安全边际。<br>"
-            "<b>【适配】</b> 盈利稳定的成长型企业。"
-        )
+        "tip": "EPS × (8.5 + 2 × 盈利增长率)"
     },
     {
         "key": "格雷厄姆数", "label": "格雷厄姆数", 
         "desc": "价值上限", 
-        "tip": (
-            "<b>【公式】</b> √(22.5 × EPS × 每股净资产)<br>"
-            "<b>【原理】</b> 结合PE和PB的保守估值上限。<br>"
-            "<b>【评价】</b> 股价 < 格雷厄姆数，具备安全边际。<br>"
-            "<b>【适配】</b> 传统制造业、周期股、资产重型企业。<b>不适合</b>轻资产科技股。"
-        )
+        "tip": "√(22.5 × EPS × 每股净资产)"
     },
     {
         "key": "净现比", "label": "净现比", 
         "desc": "盈利含金量", 
-        "tip": (
-            "<b>【公式】</b> 每股经营现金流 ÷ EPS<br>"
-            "<b>【原理】</b> 检验利润是否收到了真金白银。<br>"
-            "<b>【评价】</b> > 1 优秀；< 1 需警惕纸面富贵。<br>"
-            "<b>【适配】</b> 全行业通用，排雷神器。"
-        )
+        "tip": "每股经营现金流 ÷ EPS"
     },
     {
         "key": "市现率", "label": "市现率", 
         "desc": "现金流估值", 
-        "tip": (
-            "<b>【公式】</b> 股价 ÷ 每股经营现金流<br>"
-            "<b>【原理】</b> 现金流比利润更难造假，估值更严谨。<br>"
-            "<b>【评价】</b> 越低越好，通常 < 10 为佳。<br>"
-            "<b>【适配】</b> 折旧摊销大的重资产行业（如基建、电信）。"
-        )
+        "tip": "股价 ÷ 每股经营现金流"
     },
     {
         "key": "财务杠杆", "label": "财务杠杆", 
         "desc": "权益乘数", 
-        "tip": (
-            "<b>【公式】</b> 总资产 ÷ 股东权益<br>"
-            "<b>【原理】</b> 衡量企业负债经营的程度。<br>"
-            "<b>【评价】</b> 过高=高风险，过低=资金利用率低。<br>"
-            "<b>【适配】</b> 银行、地产、保险等高杠杆行业需重点关注。"
-        )
+        "tip": "总资产 ÷ 股东权益"
     },
     {
         "key": "总资产周转率", "label": "周转率", 
         "desc": "营运能力", 
-        "tip": (
-            "<b>【公式】</b> 营业收入 ÷ 总资产<br>"
-            "<b>【原理】</b> 衡量每一块钱资产能带来多少生意。<br>"
-            "<b>【评价】</b> 越高代表资产利用效率越高。<br>"
-            "<b>【适配】</b> 零售、贸易、薄利多销型企业（如沃尔玛）。"
-        )
+        "tip": "营业收入 ÷ 总资产"
     },
     # 2. 成长
     {
         "key": "基本每股收益同比增长率", "label": "EPS同比%", 
-        "desc": "盈利增速", "tip": "衡量归属股东利润的增长速度。<br><b>【适配】</b> 成长股核心指标。", "suffix": "%"
+        "desc": "盈利增速", "tip": "衡量归属股东利润的增长速度", "suffix": "%"
     },
     {
         "key": "营业收入同比增长率", "label": "营收同比%", 
-        "desc": "规模增速", "tip": "衡量业务规模的扩张速度。<br><b>【适配】</b> 处于抢占市场阶段的企业（如互联网早期）。", "suffix": "%"
+        "desc": "规模增速", "tip": "衡量业务规模的扩张速度", "suffix": "%"
     },
     {
         "key": "营业利润率同比增长率", "label": "利润率同比%", 
-        "desc": "获利能力变动", "tip": "反映产品竞争力的变化趋势。<br><b>【适配】</b> 制造业、竞争激烈的行业。", "suffix": "%"
+        "desc": "获利能力变动", "tip": "反映产品竞争力的变化趋势", "suffix": "%"
     },
     # 3. 基础
     {"key": "基本每股收益(元)", "label": "EPS(元)", "desc": "每股所获利润", "tip": ""},
-    {"key": "每股净资产(元)", "label": "BPS(元)", "desc": "每股归属权益", "tip": "若股价低于此值，称为'破净'。<br><b>【适配】</b> 银行、地产、钢铁。"},
-    {"key": "每股经营现金流(元)", "label": "每股现金流", "desc": "每股进账现金", "tip": "企业的血液，比利润更重要。"},
-    {
-        "key": "市净率", "label": "市净率(PB)", 
-        "desc": "净资产溢价", 
-        "tip": "股价 ÷ 每股净资产。<br><b>【适配】</b> 银行、保险、券商、周期股。<b>不适合</b>轻资产/服务业。"
-    },
-    {"key": "股息率TTM(%)", "label": "股息率%", "desc": "分红回报率", "tip": "过去12个月分红总额 ÷ 市值。<br><b>【适配】</b> 长期收息党（高速公路、水电）。", "suffix": "%"},
+    {"key": "每股净资产(元)", "label": "BPS(元)", "desc": "每股归属权益", "tip": ""},
+    {"key": "每股经营现金流(元)", "label": "每股现金流", "desc": "每股进账现金", "tip": ""},
+    {"key": "市净率", "label": "市净率(PB)", "desc": "净资产溢价", "tip": "股价 ÷ 每股净资产"},
+    {"key": "股息率TTM(%)", "label": "股息率%", "desc": "分红回报率", "tip": "过去12个月分红总额 ÷ 市值", "suffix": "%"},
     {"key": "每股股息TTM(港元)", "label": "每股股息", "desc": "每股分到的钱", "tip": ""},
-    {"key": "派息比率(%)", "label": "派息比%", "desc": "分红慷慨度", "tip": "总分红 ÷ 总净利润。<br><b>【评价】</b> >30% 算慷慨，但过高(>100%)不可持续。", "suffix": "%"},
+    {"key": "派息比率(%)", "label": "派息比%", "desc": "分红慷慨度", "tip": "总分红 ÷ 总净利润", "suffix": "%"},
     {"key": "营业总收入", "label": "营收", "desc": "总生意额", "tip": ""},
     {"key": "营业总收入滚动环比增长(%)", "label": "营收环比%", "desc": "营收短期趋势", "tip": "", "suffix": "%"},
     {"key": "净利润", "label": "净利润", "desc": "最终落袋利润", "tip": ""},
     {"key": "净利润滚动环比增长(%)", "label": "净利环比%", "desc": "净利短期趋势", "tip": "", "suffix": "%"},
-    {"key": "销售净利率(%)", "label": "净利率%", "desc": "产品暴利程度", "tip": "净利润 ÷ 营收。<br><b>【适配】</b> 衡量护城河深浅（茅台50%，商超2%）。", "suffix": "%"},
+    {"key": "销售净利率(%)", "label": "净利率%", "desc": "产品暴利程度", "tip": "净利润 ÷ 营收", "suffix": "%"},
     {
         "key": "股东权益回报率(%)", "label": "ROE%", 
         "desc": "净资产收益率", 
-        "tip": (
-            "<b>【重要】</b> 巴菲特最看重的指标。<br>"
-            "衡量管理层用股东的钱生钱的能力。<br>"
-            "<b>【评价】</b> 长期 > 20% 为极品。<br>"
-            "<b>【适配】</b> 几乎所有行业（除高杠杆强周期峰值时）。"
-        ), 
+        "tip": "衡量管理层用股东的钱生钱的能力", 
         "suffix": "%"
     },
     {
         "key": "总资产回报率(%)", "label": "ROA%", 
         "desc": "总资产收益率", 
-        "tip": "衡量所有资产(含负债)的综合利用效率。<br><b>【适配】</b> 制造业、重资产行业。", "suffix": "%"
+        "tip": "衡量所有资产(含负债)的综合利用效率", "suffix": "%"
     },
     {"key": "总市值(港元)", "label": "总市值", "desc": "", "tip": ""},
     {"key": "港股市值(港元)", "label": "港股市值", "desc": "", "tip": ""},
@@ -375,17 +442,29 @@ async def read_root(request: Request):
     
     for doc in cursor:
         latest = doc.get('latest_data', {})
+        trend_analysis = doc.get("trend_analysis", {})
+        
         stock_item = {
             "code": doc["_id"],
             "name": doc["name"],
             "date": latest.get("date", "-"),
             "intro": doc.get("intro") or latest.get("企业简介", ""),
-            "is_ggt": doc.get("is_ggt", False)
+            "is_ggt": doc.get("is_ggt", False),
+            "bull_label": doc.get("bull_label") # 获取新的评级字段
         }
         
         for col in COLUMN_CONFIG:
             key = col["key"]
-            val = latest.get(key)
+            val = None
+            
+            if key == "bull_label":
+                val = stock_item["bull_label"]
+            elif key.startswith("trend_analysis."):
+                sub_key = key.split(".")[1]
+                val = trend_analysis.get(sub_key)
+            else:
+                val = latest.get(key)
+                
             if isinstance(val, (int, float)):
                 stock_item[key] = val
             else:
@@ -437,6 +516,13 @@ async def trigger_recalculate(background_tasks: BackgroundTasks):
     background_tasks.add_task(recalculate_db_task)
     return {"success": True, "message": "已开始补全计算，请留意右上角进度条"}
 
+@app.post("/api/analyze_trends")
+async def trigger_trends(background_tasks: BackgroundTasks):
+    if status.is_running:
+        return {"success": False, "message": "后台已有任务在运行，请稍候..."}
+    background_tasks.add_task(analyze_trend_task)
+    return {"success": True, "message": "已开始执行5年长牛趋势分析，请留意右上角进度条"}
+
 @app.get("/api/status")
 async def get_status():
     return {
@@ -461,18 +547,13 @@ async def restart_service(background_tasks: BackgroundTasks):
     return {"success": True, "message": "服务正在重载，页面将在 3 秒后刷新..."}
 
 # === 定时任务 API ===
-
 @app.get("/api/schedule")
 async def get_schedule():
-    """获取当前定时配置"""
     config = config_collection.find_one({"_id": "schedule_config"})
     if not config:
         config = DEFAULT_SCHEDULE
-    
-    # 确保字段齐全
     if "type" not in config: config["type"] = "daily"
     if "day_of_week" not in config: config["day_of_week"] = "5"
-    
     return {
         "type": config.get("type"),
         "day_of_week": config.get("day_of_week"),
@@ -482,7 +563,6 @@ async def get_schedule():
 
 @app.post("/api/schedule")
 async def set_schedule(data: dict = Body(...)):
-    """保存并更新定时配置"""
     hour = int(data.get("hour"))
     minute = int(data.get("minute"))
     sched_type = data.get("type", "daily")
@@ -511,17 +591,14 @@ async def set_schedule(data: dict = Body(...)):
     else:
         return {"success": False, "message": "调度器更新失败"}
 
-# === [新增] 筛选模版 API ===
-
+# === 筛选模版 API ===
 @app.get("/api/templates")
 async def get_templates():
-    # 返回所有模版，按名称排序
     cursor = template_collection.find({}, {"_id": 0}).sort("name", 1)
     return list(cursor)
 
 @app.post("/api/templates")
 async def save_template(data: dict = Body(...)):
-    """保存筛选模版"""
     name = data.get("name")
     filters = data.get("filters")
     if not name or not name.strip():
@@ -529,7 +606,6 @@ async def save_template(data: dict = Body(...)):
     if not filters:
         return {"success": False, "message": "模版内容不能为空"}
     
-    # 按名称覆盖保存
     template_collection.replace_one(
         {"name": name.strip()}, 
         {"name": name.strip(), "filters": filters}, 
@@ -539,7 +615,6 @@ async def save_template(data: dict = Body(...)):
 
 @app.delete("/api/templates/{name}")
 async def delete_template(name: str):
-    """删除筛选模版"""
     result = template_collection.delete_one({"name": name})
     if result.deleted_count > 0:
         return {"success": True, "message": "模版已删除"}

@@ -62,7 +62,6 @@ function renderNextBatch() {
     const tbody = document.getElementById('tableBody');
 
     const rowsHtml = batch.map(stock => {
-        // 获取“昨收”价格，用于计算折扣率
         let closePrice = 0;
         if (stock['昨收']) {
             closePrice = parseFloat(String(stock['昨收']).replace(/,/g, ''));
@@ -72,6 +71,16 @@ function renderNextBatch() {
             let val = stock[col.key];
             if (val === undefined || val === null || val === '-' || val === '') {
                 return `<td><span class="text-muted">-</span></td>`;
+            }
+
+            // [修改] 渲染长牛评级徽章
+            if (col.key === 'bull_label') {
+                if (val.includes('5年')) return `<td><span class="badge bg-danger">👑 长牛5年</span></td>`;
+                if (val.includes('4年')) return `<td><span class="badge bg-warning text-dark">🔥 长牛4年</span></td>`;
+                if (val.includes('3年')) return `<td><span class="badge bg-primary">💎 长牛3年</span></td>`;
+                if (val.includes('2年')) return `<td><span class="badge bg-info text-dark">⭐ 长牛2年</span></td>`;
+                if (val.includes('1年')) return `<td><span class="badge bg-success">🌱 长牛1年</span></td>`;
+                return `<td>${val}</td>`;
             }
 
             let num = parseFloat(String(val).replace(/,/g, ''));
@@ -96,56 +105,28 @@ function renderNextBatch() {
             // === 估值与质量勋章逻辑 START ===
             if (!isNaN(num)) {
                 let badge = '';
-
-                // 1. PEG: 0-0.5(极低), 0.5-1(低)
                 if (col.key === 'PEG') {
-                    if (num >= 0 && num < 0.5) {
-                        badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
-                    } else if (num >= 0.5 && num <= 1) {
-                        badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
-                    }
+                    if (num >= 0 && num < 0.5) badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
+                    else if (num >= 0.5 && num <= 1) badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
                 }
-                // 2. PEGY: 0-1(低)
                 else if (col.key === 'PEGY') {
-                    if (num >= 0 && num <= 1) {
-                        badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
-                    }
+                    if (num >= 0 && num <= 1) badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
                 }
-                // 3. 价格 vs 价值 (合理股价 & 格雷厄姆数)
                 else if ((col.key === '合理股价' || col.key === '格雷厄姆数') && closePrice > 0 && num > 0) {
                     let ratio = closePrice / num;
-
                     if (col.key === '合理股价') {
-                        // 现价 < 50% 估值 -> 极低
-                        if (ratio < 0.5) {
-                            badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
-                        } 
-                        // 现价在 50% - 67% 估值之间 -> 低
-                        else if (ratio >= 0.5 && ratio <= 0.67) {
-                            badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
-                        }
-                    } 
-                    else if (col.key === '格雷厄姆数') {
-                        // 现价 < 70% 估值 -> 极低
-                        if (ratio < 0.7) {
-                            badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
-                        } 
-                        // 现价在 70% - 90% 估值之间 -> 低
-                        else if (ratio >= 0.7 && ratio <= 0.9) {
-                            badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
-                        }
+                        if (ratio < 0.5) badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
+                        else if (ratio >= 0.5 && ratio <= 0.67) badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
+                    } else if (col.key === '格雷厄姆数') {
+                        if (ratio < 0.7) badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">极低</span>`;
+                        else if (ratio >= 0.7 && ratio <= 0.9) badge = `<span class="badge bg-info text-dark ms-1" style="font-size:10px; padding:2px 4px;">低</span>`;
                     }
                 }
-                // 4. 净现比: >= 1 (优)
-                else if (col.key === '净现比') {
-                    if (num >= 1) {
-                        badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">优</span>`;
-                    }
+                else if (col.key === '净现比' && num >= 1) {
+                    badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">优</span>`;
                 }
 
-                if (badge) {
-                    displayVal += badge;
-                }
+                if (badge) displayVal += badge;
             }
             // === 估值与质量勋章逻辑 END ===
             
@@ -242,6 +223,14 @@ function executeFiltering() {
             if (range.min === null && range.max === null) continue;
             let rawVal = stock[key];
             if (!rawVal || rawVal === '-' || rawVal === '') return false;
+            
+            // 简单的文本包含过滤 (针对长牛标签)
+            if (key === 'bull_label') {
+                // 如果设置了min/max其实对字符串无效，这里保留逻辑兼容
+                // 实际建议增加文本筛选器，或者简单跳过字符串列的数值筛选
+                continue; 
+            }
+
             let val = parseFloat(String(rawVal).replace(/,/g, '').replace('%', ''));
             if (range.min !== null && val < range.min) return false;
             if (range.max !== null && val > range.max) return false;
@@ -281,6 +270,7 @@ function doSort(key, type, shouldRender = true) {
     g_visibleStocks.sort((a, b) => {
         let valA = a[key];
         let valB = b[key];
+        
         if (type === 'numeric') {
             valA = (valA === '-' || !valA) ? -Infinity : parseFloat(String(valA).replace(/,/g, ''));
             valB = (valB === '-' || !valB) ? -Infinity : parseFloat(String(valB).replace(/,/g, ''));
@@ -302,6 +292,25 @@ function triggerRecalculate() {
     document.getElementById('recalcBtn').disabled = true;
     fetch('/api/recalculate', { method: 'POST' });
 }
+
+// [修改] 触发长牛趋势分析
+function triggerTrendAnalysis() {
+    if(!confirm("确定要执行【5年分级】长牛筛选吗？\n\n这需要下载过去5年的K线数据，耗时较长，请耐心等待。")) return;
+    
+    const btn = document.getElementById('trendBtn');
+    btn.disabled = true;
+    
+    fetch('/api/analyze_trends', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => {
+            alert(data.message);
+        })
+        .catch(err => {
+            alert("请求失败");
+            btn.disabled = false;
+        });
+}
+
 function restartService() {
     if(!confirm("确定重启吗？")) return;
     fetch('/api/restart', { method: 'POST' }).then(() => {
@@ -328,12 +337,14 @@ setInterval(() => {
         const stopBtn = document.getElementById('stopBtn');
         const refreshBtn = document.getElementById('refreshBtn');
         const recalcBtn = document.getElementById('recalcBtn');
+        const trendBtn = document.getElementById('trendBtn'); 
 
         if (data.is_running) {
             container.style.display = 'block';
             stopBtn.style.display = 'inline-block';
             refreshBtn.disabled = true;
             recalcBtn.disabled = true;
+            if(trendBtn) trendBtn.disabled = true; 
             
             const pct = data.total > 0 ? Math.round(data.current/data.total*100) : 0;
             document.getElementById('progress-bar').style.width = pct + "%";
@@ -346,6 +357,7 @@ setInterval(() => {
             stopBtn.style.display = 'none';
             refreshBtn.disabled = false;
             recalcBtn.disabled = false;
+            if(trendBtn) trendBtn.disabled = false; 
         }
     });
 }, 1500);
@@ -392,7 +404,10 @@ function loadChart(code, fieldKey, fieldLabel, suffix = '') {
     });
 }
 
-// === 定时任务设置逻辑 ===
+// ... (以下定时任务和筛选模版代码逻辑保持不变，为节省篇幅略去，实际使用请保留原文件的这部分代码) ...
+// 请确保将原文件 script.js 中从 'var scheduleModal' 到底部的代码完整保留。
+// (为保证文件完整性，这里我还是贴出剩余部分)
+
 var scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
 
 function toggleWeekSelect() {
@@ -466,14 +481,12 @@ function saveSchedule() {
     });
 }
 
-// === 动态高级筛选逻辑 + 模版管理 ===
 var advFilterModal = new bootstrap.Modal(document.getElementById('advancedFilterModal'));
 
 function openAdvancedFilterModal() {
     const listContainer = document.getElementById('activeFiltersList');
     const select = document.getElementById('advFilterSelect');
     
-    // 1. 初始化指标下拉
     select.innerHTML = '';
     g_columns.forEach(col => {
         if (col.no_sort && col.key !== '昨收') return; 
@@ -483,7 +496,6 @@ function openAdvancedFilterModal() {
         select.appendChild(option);
     });
 
-    // 2. 渲染已激活的筛选
     listContainer.innerHTML = '';
     let hasActive = false;
     for (const [key, range] of Object.entries(activeFilters)) {
@@ -493,10 +505,7 @@ function openAdvancedFilterModal() {
         }
     }
     document.getElementById('emptyTip').style.display = hasActive ? 'none' : 'block';
-
-    // 3. 加载模版列表
     fetchTemplates();
-
     advFilterModal.show();
 }
 
@@ -519,13 +528,9 @@ function fetchTemplates() {
 function loadSelectedTemplate() {
     const name = document.getElementById('templateSelect').value;
     if (!name) return;
-
     const template = g_templates.find(t => t.name === name);
     if (!template) return;
-
-    // 清空现有UI行
     document.getElementById('activeFiltersList').innerHTML = '';
-    
     if (Object.keys(template.filters).length > 0) {
         document.getElementById('emptyTip').style.display = 'none';
         for (const [key, range] of Object.entries(template.filters)) {
@@ -543,7 +548,6 @@ function saveCurrentTemplate() {
         alert("请输入模版名称");
         return;
     }
-
     const filters = {};
     const rows = document.querySelectorAll('.adv-filter-row');
     rows.forEach(row => {
@@ -557,12 +561,10 @@ function saveCurrentTemplate() {
             };
         }
     });
-
     if (Object.keys(filters).length === 0) {
         alert("请先添加至少一个筛选条件");
         return;
     }
-
     fetch('/api/templates', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -587,7 +589,6 @@ function deleteCurrentTemplate() {
         return;
     }
     if (!confirm(`确定要删除模版 "${name}" 吗？`)) return;
-
     fetch(`/api/templates/${encodeURIComponent(name)}`, { method: 'DELETE' })
         .then(res => res.json())
         .then(data => {
@@ -605,7 +606,6 @@ function addNewFilterRow() {
     const select = document.getElementById('advFilterSelect');
     const key = select.value;
     if(!key) return;
-
     const existingRow = document.querySelector(`.adv-filter-row[data-key="${key}"]`);
     if(existingRow) {
         existingRow.classList.add('bg-warning');
@@ -613,7 +613,6 @@ function addNewFilterRow() {
         existingRow.scrollIntoView({behavior: 'smooth', block: 'center'});
         return;
     }
-
     renderFilterRow(key, null, null);
     document.getElementById('emptyTip').style.display = 'none';
 }
@@ -622,7 +621,6 @@ function renderFilterRow(key, min, max) {
     const container = document.getElementById('activeFiltersList');
     const colDef = g_columns.find(c => c.key === key);
     if (!colDef) return;
-
     const rowHtml = `
         <div class="card p-2 adv-filter-row shadow-sm border" data-key="${key}" style="transition: background 0.3s;">
             <div class="d-flex align-items-center gap-2">
@@ -655,23 +653,18 @@ function applyAdvancedFilter() {
         activeFilters[key] = { min: null, max: null };
         updateHeaderStyle(key);
     }
-
     const rows = document.querySelectorAll('.adv-filter-row');
     rows.forEach(row => {
         const key = row.getAttribute('data-key');
         const minInput = row.querySelector('.adv-min');
         const maxInput = row.querySelector('.adv-max');
-        
         const minVal = minInput.value;
         const maxVal = maxInput.value;
-
         if (minVal !== '' || maxVal !== '') {
             if (!activeFilters[key]) activeFilters[key] = {};
             activeFilters[key].min = minVal === "" ? null : parseFloat(minVal);
             activeFilters[key].max = maxVal === "" ? null : parseFloat(maxVal);
-            
             updateHeaderStyle(key);
-            
             const headerPopup = document.querySelector(`th[data-key="${key}"] .filter-popup`);
             if (headerPopup) {
                 headerPopup.querySelector(`#min-${CSS.escape(key)}`).value = minVal;
@@ -679,41 +672,33 @@ function applyAdvancedFilter() {
             }
         }
     });
-
     executeFiltering(); 
     advFilterModal.hide(); 
 }
 
 function clearAllFilters() {
     document.getElementById('globalSearchInput').value = '';
-    
     for (const key in activeFilters) {
         activeFilters[key] = { min: null, max: null };
         updateHeaderStyle(key); 
-        
         const headerPopup = document.querySelector(`th[data-key="${key}"] .filter-popup`);
         if (headerPopup) {
             headerPopup.querySelector(`#min-${CSS.escape(key)}`).value = '';
             headerPopup.querySelector(`#max-${CSS.escape(key)}`).value = '';
         }
     }
-
     document.getElementById('activeFiltersList').innerHTML = '';
     document.getElementById('emptyTip').style.display = 'block';
-
     executeFiltering();
     advFilterModal.hide(); 
 }
 
-// 导出到剪贴板功能
 function exportToClipboard() {
     if (!g_visibleStocks || g_visibleStocks.length === 0) {
         alert("当前列表中没有数据可导出！");
         return;
     }
-
     const textToCopy = g_visibleStocks.map(stock => `${stock.code}\t${stock.name}`).join('\n');
-
     if (navigator.clipboard && window.isSecureContext) {
         navigator.clipboard.writeText(textToCopy).then(() => {
             alert(`✅ 已成功复制 ${g_visibleStocks.length} 条数据到剪贴板！\n格式：代码 + Tab + 名称`);
@@ -734,7 +719,6 @@ function fallbackCopy(text) {
     document.body.appendChild(textArea);
     textArea.focus();
     textArea.select();
-
     try {
         const successful = document.execCommand('copy');
         if (successful) {
@@ -746,6 +730,5 @@ function fallbackCopy(text) {
         console.error('Fallback copy failed:', err);
         alert("❌ 浏览器不支持自动复制，请手动操作");
     }
-
     document.body.removeChild(textArea);
 }
