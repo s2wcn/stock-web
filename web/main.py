@@ -26,8 +26,8 @@ from crawler_state import status
 
 # 引入分析服务
 from services.analysis_service import AnalysisService
-# [注意] 请确保 web/config.py 文件存在，否则请将 COLUMN_CONFIG 定义放回此处
-from config import COLUMN_CONFIG
+# 引入配置中的字段定义
+from config import COLUMN_CONFIG, NUMERIC_FIELDS
 
 # 初始化调度器
 scheduler = BackgroundScheduler(timezone=str(get_localzone()))
@@ -67,7 +67,7 @@ def dynamic_task_wrapper():
             status.finish(f"任务异常: {e}")
 
 def recalculate_db_task():
-    print("🔄 开始执行离线补全指标...")
+    print("🔄 开始执行离线补全指标与类型修复...")
     cursor = stock_collection.find({})
     all_docs = list(cursor) 
     total = len(all_docs)
@@ -94,11 +94,21 @@ def recalculate_db_task():
         latest_record = {}
 
         for item in history:
+            # [修复] 强制类型转换：遍历所有键，如果应该为数字但却是字符串，尝试修复
+            # 这解决了历史数据中可能存在的 "15.2" 字符串问题
+            for k, v in item.items():
+                if k in NUMERIC_FIELDS and isinstance(v, str):
+                    try:
+                        item[k] = float(v.replace(',', ''))
+                    except:
+                        pass # 无法转换则保持原样
+
             def get_f(keys):
                 for k in keys:
                     val = item.get(k)
                     if val is not None:
                         try:
+                            # 已经尝试过修复，这里再次确保安全
                             return float(str(val).replace(',', ''))
                         except:
                             pass
@@ -224,7 +234,7 @@ async def read_root(request: Request):
         "last_updated": last_time_str
     })
 
-# === [修改] 通用分页查询接口 (修复排序和筛选) ===
+# === [修改] 通用分页查询接口 (修复长牛评级筛选 Bug) ===
 @app.post("/api/stocks/query")
 async def query_stocks(
     page: int = Body(1), 
@@ -249,15 +259,15 @@ async def query_stocks(
         for key, range_val in filters.items():
             db_key = key
             
-            # [修正] 字段映射逻辑
+            # 字段映射逻辑
             if key == "code":
                 db_key = "_id"
             elif key.startswith("trend_analysis."):
-                db_key = key # 保持原样
-            elif key.startswith("ma_strategy."): # [新增] 策略字段直接透传
+                db_key = key 
+            elif key.startswith("ma_strategy."): 
                 db_key = key
             elif key == "bull_label":
-                db_key = "bull_label" # 在根目录
+                db_key = "bull_label" 
             elif key == "所属行业":
                 db_key = "latest_data.所属行业"
             elif key not in ["_id", "name", "bull_label"]:
@@ -269,19 +279,49 @@ async def query_stocks(
             
             range_query = {}
             
-            # [修正] 针对文本字段的模糊匹配 (行业、长牛评级)
+            # === [核心修复] 针对 "bull_label" 的特殊数值范围处理 ===
+            if key == "bull_label":
+                # 尝试判断用户是否输入了数字范围 (例如 1-5)
+                try:
+                    target_labels = []
+                    # 如果有 min 或 max，尝试解析年份
+                    start_year = int(float(min_v)) if (min_v is not None and min_v != "") else 1
+                    end_year = int(float(max_v)) if (max_v is not None and max_v != "") else 5
+                    
+                    # 生成匹配列表，例如 3-5 -> ["长牛3年", "长牛4年", "长牛5年"]
+                    # 假设系统目前支持 1 到 5 年
+                    for y in range(1, 6):
+                        if start_year <= y <= end_year:
+                            target_labels.append(f"长牛{y}年")
+                    
+                    if target_labels:
+                        filter_conditions.append({db_key: {"$in": target_labels}})
+                    continue # 处理完毕，跳过后续逻辑
+                    
+                except ValueError:
+                    # 如果输入的不是数字（比如输入了文本 "长牛"），则回退到下面的模糊匹配逻辑
+                    pass
+
+            # 针对文本字段的模糊匹配 (行业、或者非数字的长牛搜索)
             if key in ["所属行业", "bull_label"]:
-                if min_v: # 前端通过 min 字段传文本
+                if min_v: 
                     range_query = {"$regex": str(min_v), "$options": "i"}
                     filter_conditions.append({db_key: range_query})
-                continue # 文本字段处理完直接跳过，不走数值逻辑
+                continue 
 
-            # 数值范围逻辑
+            # [修复] 健壮的数值范围逻辑，防止非数字筛选导致崩溃
             if min_v is not None and min_v != "":
-                range_query["$gte"] = float(min_v)
-            if max_v is not None and max_v != "":
-                range_query["$lte"] = float(max_v)
+                try:
+                    range_query["$gte"] = float(min_v)
+                except ValueError:
+                    pass # 忽略非数字输入
             
+            if max_v is not None and max_v != "":
+                try:
+                    range_query["$lte"] = float(max_v)
+                except ValueError:
+                    pass
+
             if range_query:
                 cond = {db_key: range_query}
                 filter_conditions.append(cond)
@@ -300,7 +340,7 @@ async def query_stocks(
     if sort_key:
         db_sort_key = sort_key
         
-        # [修正] 排序字段映射：code -> _id
+        # 排序字段映射
         if sort_key == "code":
             db_sort_key = "_id"
         elif sort_key not in ["_id", "name", "bull_label"] and not sort_key.startswith("trend_analysis") and not sort_key.startswith("ma_strategy"):
@@ -317,7 +357,7 @@ async def query_stocks(
     for doc in cursor:
         latest = doc.get('latest_data', {})
         trend = doc.get("trend_analysis", {})
-        ma_strat = doc.get("ma_strategy", {}) # [新增] 获取策略数据
+        ma_strat = doc.get("ma_strategy", {}) 
         
         # 扁平化处理
         item = {
@@ -327,12 +367,11 @@ async def query_stocks(
             "intro": doc.get("intro") or latest.get("企业简介", ""),
             "is_ggt": doc.get("is_ggt", False),
             "bull_label": doc.get("bull_label", ""),
-            **latest # 展开 latest_data
+            **latest 
         }
         for k, v in trend.items():
             item[f"trend_analysis.{k}"] = v
 
-        # [新增] 扁平化处理策略数据 (ma_strategy)
         if ma_strat:
             item["ma_strategy.total_return"] = ma_strat.get("total_return")
             item["ma_strategy.benchmark_return"] = ma_strat.get("benchmark_return")

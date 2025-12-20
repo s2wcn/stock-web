@@ -11,7 +11,8 @@ MONGO_PASS = os.getenv("MONGO_PASS", "")
 DB_NAME = os.getenv("MONGO_DB_NAME", "stock_system")
 
 # 构建连接 URI
-if MONGO_USER and MONGO_PASS:
+# [修复] 只要有用户名，就应该尝试构建带认证的 URI，防止密码为空字符串时的逻辑错误
+if MONGO_USER:
     MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@{MONGO_HOST}:{MONGO_PORT}/"
 else:
     MONGO_URI = f"mongodb://{MONGO_HOST}:{MONGO_PORT}/"
@@ -44,7 +45,6 @@ def init_db():
         stock_collection.create_index([("bull_label", ASCENDING)])
         
         # 排序和筛选常用字段索引 (Latest Data)
-        # 注意: MongoDB 对嵌套字段索引也是支持的
         index_fields = [
             "latest_data.昨收", 
             "latest_data.市盈率", 

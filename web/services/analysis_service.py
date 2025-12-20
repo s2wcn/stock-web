@@ -1,6 +1,7 @@
 import numpy as np
+import pandas as pd
 from scipy import stats
-from datetime import datetime
+from datetime import datetime, timedelta
 import akshare as ak
 import time
 import random
@@ -71,31 +72,55 @@ class AnalysisService:
         print("✅ Service: 趋势分析任务结束")
 
     def _analyze_single_stock(self, code, days_per_year, min_r2, min_ret, max_ret, min_turnover):
-        # 获取后复权数据以保证价格连续性，或者前复权
+        # 获取后复权数据以保证价格连续性
         df = ak.stock_hk_daily(symbol=code, adjust="qfq")
         
         bull_label = None  
         trend_data = {}    
 
         if df is not None and not df.empty:
+            # === [修改] 确保日期格式为 datetime ===
+            if 'date' in df.columns:
+                df['date'] = pd.to_datetime(df['date'])
+            
             # 预处理成交额
             if 'close' in df.columns and 'volume' in df.columns:
                 df['amount_est'] = df['close'].astype(float) * df['volume'].astype(float)
             else:
                 df['amount_est'] = 0
 
+            latest_date = df['date'].iloc[-1]
+
             # 倒序循环：5年 -> 1年
             for year in [5, 4, 3, 2, 1]:
-                required_days = year * days_per_year
-                if len(df) < required_days * 0.8: continue
+                # === [修改] 使用日历时间计算起始点 ===
+                # 逻辑参考 analyze_ma_bias.py
+                try:
+                    target_start_date = latest_date - pd.DateOffset(years=year)
+                except:
+                    target_start_date = latest_date - timedelta(days=365 * year)
                 
-                df_subset = df.iloc[-required_days:].copy()
+                # 筛选大于等于目标起始日期的数据
+                mask = df['date'] >= target_start_date
+                if not mask.any(): continue
                 
+                df_subset = df[mask].copy()
+                
+                # === [新增] 数据覆盖度校验 ===
+                # 如果切片后的第一天日期比目标日期晚了超过 30 天，说明该股票上市不足该年份，或开头缺失严重
+                if df_subset.empty: continue
+                
+                actual_start_date = df_subset['date'].iloc[0]
+                if (actual_start_date - target_start_date).days > 30:
+                    continue
+
                 # 成交额过滤
                 avg_turnover = df_subset['amount_est'].mean()
                 if avg_turnover < min_turnover: continue 
 
                 y_data = df_subset['close'].astype(float).values
+                # 确保有足够的数据点进行回归
+                if len(y_data) < 20: continue 
                 if np.any(y_data <= 0): continue
                     
                 x_data = np.arange(len(y_data))
@@ -103,6 +128,8 @@ class AnalysisService:
                 
                 slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, log_y_data)
                 r_squared = r_value ** 2
+                
+                # 计算年化收益 (基于 Slope * 250交易日/年)
                 annualized_return = (np.exp(slope * days_per_year) - 1) * 100
                 
                 if (r_squared >= min_r2 and slope > 0 and 
