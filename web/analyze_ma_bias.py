@@ -3,23 +3,26 @@ import pandas as pd
 import numpy as np
 import time
 import random
+import asyncio
+import os
+from datetime import datetime, timedelta
+from concurrent.futures import ProcessPoolExecutor
 from tqdm import tqdm
-from database import stock_collection  # 复用你的数据库连接
+from numba import jit
+from pymongo import MongoClient 
+
+# 仅导入配置，用于子进程重建连接
+from database import MONGO_URI, DB_NAME
 
 # === 1. 参数配置区域 ===
 
-# 买入阈值范围 (针对 20日线): 从 -10% 到 +2%，步长 0.5%
-# 含义：负数代表跌破均线买入，正数代表回踩均线附近买入
 BUY_RANGE = np.arange(-0.10, 0.021, 0.005)
-
-# 卖出阈值范围 (针对 5日线): 从 0% 到 +15%，步长 0.5%
-# 含义：股价超过5日线多少时止盈
 SELL_RANGE = np.arange(0.00, 0.151, 0.005)
-
-# 基础风控：固定止损 (防止单笔极度深套)
 HARD_STOP_LOSS = -0.15 
-# 交易费率
 COMMISSION = 0.002 
+
+MAX_WORKERS = min(os.cpu_count(), 4) 
+TASK_TIMEOUT = 600  
 
 def get_bull_period_days(bull_label):
     if not bull_label: return 0
@@ -30,105 +33,212 @@ def get_bull_period_days(bull_label):
     if "1年" in bull_label: return 250 * 1
     return 0
 
-def backtest_ma_bias(df, buy_bias_threshold, sell_bias_threshold):
-    """
-    均线乖离策略回测
-    buy_bias_threshold: 针对MA20的偏离阈值 (如 -0.02)
-    sell_bias_threshold: 针对MA5的偏离阈值 (如 0.05)
-    """
+# === Numba 极速回测逻辑 ===
+@jit(nopython=True)
+def backtest_numba(close_arr, bias5_arr, bias20_arr, buy_bias_threshold, sell_bias_threshold):
     capital = 10000.0
-    hold_shares = 0
-    cost_price = 0
-    in_market = False
+    hold_shares = 0.0
+    cost_price = 0.0
+    in_market = False 
     
     trade_count = 0
     win_count = 0
     
-    # 遍历每一天 (从数据足够计算MA的那一天开始)
-    for i in range(len(df)):
-        row = df.iloc[i]
+    n = len(close_arr)
+    hard_stop_loss = -0.15
+    commission = 0.002
+    
+    for i in range(n):
+        current_price = close_arr[i]
         
-        # 必须有均线数据才能交易
-        if pd.isna(row['ma20']) or pd.isna(row['ma5']):
+        # [保护] 如果价格为0 (脏数据)，跳过当天
+        if current_price <= 0.0001:
             continue
-            
-        current_price = row['close']
+
+        b5 = bias5_arr[i]
+        b20 = bias20_arr[i]
         
-        # 1. 持仓状态：检查卖出
         if in_market:
-            # 策略卖出：偏离5日线过大 或 触发硬止损
+            # [保护] cost_price 理论上不为0，因为买入时必须有价格，但加层保险
+            if cost_price <= 0.0001:
+                in_market = False
+                hold_shares = 0.0
+                continue
+                
             current_profit = (current_price - cost_price) / cost_price
-            
-            if row['bias_5'] >= sell_bias_threshold or current_profit <= HARD_STOP_LOSS:
-                # 执行卖出
-                revenue = hold_shares * current_price * (1 - COMMISSION)
+            if b5 >= sell_bias_threshold or current_profit <= hard_stop_loss:
+                revenue = hold_shares * current_price * (1 - commission)
                 capital = revenue
                 in_market = False
-                hold_shares = 0
+                hold_shares = 0.0
                 
                 trade_count += 1
-                if current_profit > 0: win_count += 1
+                if current_profit > 0:
+                    win_count += 1
 
-        # 2. 空仓状态：检查买入
         else:
-            # 策略买入：踩到 20日线特定位置
-            if row['bias_20'] <= buy_bias_threshold:
-                cost_after_fee = current_price * (1 + COMMISSION)
+            if b20 <= buy_bias_threshold:
+                cost_after_fee = current_price * (1 + commission)
                 hold_shares = capital / cost_after_fee
                 cost_price = current_price
                 in_market = True
                 
-    # 结算最后一天
     final_value = capital
     if in_market:
-        final_value = hold_shares * df.iloc[-1]['close'] * (1 - COMMISSION)
+        final_value = hold_shares * close_arr[-1] * (1 - commission)
         
     return_pct = (final_value - 10000.0) / 10000.0 * 100
     return return_pct, trade_count, win_count
 
-def optimize_single_stock(code, name, days):
-    try:
-        df = ak.stock_hk_daily(symbol=code, adjust="qfq")
-        if df is None or len(df) < 60: return None
+# === 数据同步与获取逻辑 ===
+def sync_qfq_history(code, name, db_collection):
+    """
+    检查数据库，增量更新 QFQ 历史数据，并返回完整的 DataFrame
+    """
+    doc = db_collection.find_one({"_id": code}, {"qfq_history": 1})
+    existing_data = doc.get("qfq_history", []) if doc else []
+    
+    start_date = "19700101"
+    
+    # 2. 检查数据是否新鲜
+    if existing_data:
+        last_record = existing_data[-1]
+        last_date_str = last_record.get("date") 
         
-        # 截取长牛周期
+        try:
+            last_dt = datetime.strptime(last_date_str, "%Y-%m-%d")
+            yesterday = datetime.now() - timedelta(days=1)
+            # 如果最后一条数据是昨天或今天，跳过
+            if last_dt.date() >= yesterday.date():
+                return pd.DataFrame(existing_data)
+            
+            # 否则增量更新
+            next_day = last_dt + timedelta(days=1)
+            start_date = next_day.strftime("%Y%m%d")
+            
+        except Exception:
+            start_date = "19700101"
+            existing_data = []
+
+    # 3. 调用 AkShare 增量抓取
+    try:
+        time.sleep(random.uniform(0.5, 1.5))
+        
+        df_new = ak.stock_hk_hist(
+            symbol=code, 
+            period="daily", 
+            start_date=start_date, 
+            end_date="22220101", 
+            adjust="qfq"
+        )
+        
+        if df_new is None or df_new.empty:
+            return pd.DataFrame(existing_data) if existing_data else None
+
+        # 4. 数据清洗
+        rename_map = {
+            "日期": "date", "收盘": "close", "开盘": "open", 
+            "最高": "high", "最低": "low", "成交量": "volume"
+        }
+        df_new.rename(columns=rename_map, inplace=True)
+        
+        if "close" not in df_new.columns:
+            return pd.DataFrame(existing_data) if existing_data else None
+            
+        df_new['date'] = pd.to_datetime(df_new['date']).dt.strftime("%Y-%m-%d")
+        
+        # [新增] 强制类型转换，防止字符串导致的错误
+        for col in ["close", "open", "high", "low", "volume"]:
+            if col in df_new.columns:
+                df_new[col] = pd.to_numeric(df_new[col], errors='coerce')
+        
+        new_records = df_new.to_dict('records')
+        
+        # 5. 保存回数据库
+        if not existing_data:
+            db_collection.update_one(
+                {"_id": code}, 
+                {"$set": {"qfq_history": new_records}}
+            )
+            return df_new
+        else:
+            db_collection.update_one(
+                {"_id": code}, 
+                {"$push": {"qfq_history": {"$each": new_records}}}
+            )
+            return pd.DataFrame(existing_data + new_records)
+
+    except Exception as e:
+        print(f"❌ [{code}] 同步数据失败: {e}")
+        return pd.DataFrame(existing_data) if existing_data else None
+
+# === 子进程执行函数 ===
+def optimize_single_stock_process(code, name, days):
+    """
+    [独立进程函数] 
+    """
+    local_client = None
+    try:
+        local_client = MongoClient(MONGO_URI)
+        local_db = local_client[DB_NAME]
+        local_collection = local_db["stocks"]
+
+        df = sync_qfq_history(code, name, local_collection)
+        
+        if df is None or len(df) < 60: 
+            return None
+            
+        # [新增] 核心修复：强力清洗脏数据 (收盘价 <= 0 的行)
+        if 'close' in df.columns:
+            df['close'] = pd.to_numeric(df['close'], errors='coerce')
+            df = df[df['close'] > 0.0001] # 剔除 0 或负数价格
+        
+        if len(df) < 60:
+            return None
+        
+        # 3. 截取分析周期
         df = df.iloc[-days:].copy().reset_index(drop=True)
         
-        # === 预计算均线和乖离率 ===
-        df['ma5'] = df['close'].rolling(window=5).mean()
-        df['ma20'] = df['close'].rolling(window=20).mean()
+        # 4. 预计算
+        close_series = df['close'].astype(float)
+        df['ma5'] = close_series.rolling(window=5).mean()
+        df['ma20'] = close_series.rolling(window=20).mean()
         
-        df['bias_5'] = (df['close'] - df['ma5']) / df['ma5']
-        df['bias_20'] = (df['close'] - df['ma20']) / df['ma20']
+        # 使用 numpy 的错误处理上下文，防止除以 0 报错 (变成 inf/nan)
+        with np.errstate(divide='ignore', invalid='ignore'):
+            df['bias_5'] = (close_series - df['ma5']) / df['ma5']
+            df['bias_20'] = (close_series - df['ma20']) / df['ma20']
         
-        # 剔除前期均线计算导致的 NaN
-        df.dropna(subset=['ma20'], inplace=True)
+        df.dropna(subset=['ma20', 'bias_5', 'bias_20'], inplace=True)
         df.reset_index(drop=True, inplace=True)
         
-        # === [新增] 计算基准回报率 (Buy & Hold) ===
-        if len(df) > 0:
-            start_price = df.iloc[0]['close']
-            end_price = df.iloc[-1]['close']
-            # 基准回报 = (终价 - 始价) / 始价
-            benchmark_return = (end_price - start_price) / start_price * 100
+        if len(df) == 0: return None
+
+        # 5. 准备 Numba 数据
+        close_arr = df['close'].astype(float).values
+        bias5_arr = df['bias_5'].astype(float).values
+        bias20_arr = df['bias_20'].astype(float).values
+
+        # [修复] 基准回报率计算保护
+        start_price = close_arr[0]
+        if start_price <= 0.0001:
+            benchmark_return = 0.0
         else:
-            benchmark_return = 0
+            end_price = close_arr[-1]
+            benchmark_return = (end_price - start_price) / start_price * 100
 
         best_result = {
             "total_return": -999,
-            "benchmark_return": round(benchmark_return, 2), # 存储基准回报
+            "benchmark_return": round(benchmark_return, 2),
             "params": {"buy_bias": 0, "sell_bias": 0},
             "metrics": {"win_rate": 0, "trades": 0}
         }
         
-        # === 网格搜索 ===
+        # 6. 网格搜索
         for b in BUY_RANGE:
             for s in SELL_RANGE:
-                ret, trades, wins = backtest_ma_bias(df, b, s)
-                
-                # 过滤：必须有一定交易次数，避免偶然
+                ret, trades, wins = backtest_numba(close_arr, bias5_arr, bias20_arr, float(b), float(s))
                 if trades < 3: continue 
-                
                 if ret > best_result["total_return"]:
                     win_rate = (wins / trades * 100) if trades > 0 else 0
                     best_result.update({
@@ -145,60 +255,116 @@ def optimize_single_stock(code, name, days):
         
         if best_result["total_return"] == -999:
             return None
-            
-        return best_result
+        
+        return code, name, best_result
 
     except Exception as e:
-        print(f"❌ {code} 计算出错: {e}")
+        print(f"❌ [{code}] 计算进程异常: {e}")
         return None
+    finally:
+        if local_client:
+            local_client.close()
 
-def main():
-    print("🚀 开始执行【均线乖离率策略】优化...")
-    print("对比: 策略回报率 (高抛低吸) vs 基准回报率 (持有不动)")
+def check_network():
+    print("📡 正在进行网络连通性测试 (测试代码: 00700)...")
+    try:
+        test_df = ak.stock_hk_hist(symbol="00700", period="daily", start_date="20230101", end_date="20230105", adjust="qfq")
+        if test_df is not None and not test_df.empty:
+            print("✅ 网络测试通过！")
+            return True
+    except Exception as e:
+        print(f"❌ 网络测试失败: {e}")
+    return False
+
+def clean_non_bull_data():
+    """
+    清理非长牛股的历史数据 (使用主进程连接)
+    """
+    print("🧹 正在清理非长牛股的 QFQ 历史数据...")
+    try:
+        # 这里需要临时建立连接，或者复用 global_collection 
+        # 因为在 main 之前运行，确保有连接
+        temp_client = MongoClient(MONGO_URI)
+        temp_db = temp_client[DB_NAME]
+        temp_col = temp_db["stocks"]
+        
+        result = temp_col.update_many(
+            {"$or": [{"bull_label": {"$exists": False}}, {"bull_label": None}]},
+            {"$unset": {"qfq_history": ""}}
+        )
+        print(f"✅ 清理完成: 删除了 {result.modified_count} 只股票的历史数据")
+        temp_client.close()
+    except Exception as e:
+        print(f"❌ 清理失败: {e}")
+
+async def main():
+    print("🚀 开始执行【均线乖离率策略】优化 (V5: 数据清洗版)...")
     
-    # 查找长牛股
+    if not check_network():
+        return
+    
+    clean_non_bull_data()
+
+    print(f"⚙️  CPU核心数: {os.cpu_count()} | 启用进程数: {MAX_WORKERS} | 超时: {TASK_TIMEOUT}s")
+    
+    # 获取任务列表 (建立临时连接)
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    global_collection = db["stocks"]
+
     query = {"bull_label": {"$exists": True, "$ne": None}}
-    cursor = stock_collection.find(query, {"_id": 1, "name": 1, "bull_label": 1})
+    cursor = global_collection.find(query, {"_id": 1, "name": 1, "bull_label": 1})
     stocks = list(cursor)
     
-    print(f"📊 待分析股票: {len(stocks)} 只")
+    print(f"📊 待分析长牛股: {len(stocks)} 只")
     
     update_count = 0
-    for doc in tqdm(stocks, desc="Optimizing"):
-        code = doc["_id"]
-        name = doc["name"]
-        
-        days = get_bull_period_days(doc["bull_label"])
-        if days == 0: continue
-        
-        res = optimize_single_stock(code, name, days)
-        
-        if res:
-            # 存入数据库
-            stock_collection.update_one(
-                {"_id": code},
-                {"$set": {"ma_strategy": res}}
-            )
-            update_count += 1
-            
-            # [修改] 打印双重回报率
-            strat_ret = res["total_return"]
-            bench_ret = res["benchmark_return"]
-            p = res["params"]
-            
-            # 只有策略回报 > 30% 且 交易次数合理才显示
-            if strat_ret > 30:
-                # 添加一个简单的评价图标
-                icon = "🔥" if strat_ret > bench_ret else "🐢"
+    loop = asyncio.get_running_loop()
+    
+    with ProcessPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        sem = asyncio.Semaphore(MAX_WORKERS)
+
+        async def sem_task(doc):
+            async with sem:
+                code = doc["_id"]
+                name = doc["name"]
+                days = get_bull_period_days(doc["bull_label"])
+                if days == 0: return None
                 
-                tqdm.write(
-                    f"{icon} {name}: 策略回报 {strat_ret}% (基准 {bench_ret}%) | "
-                    f"买[MA20 {p['buy_ma20_bias']}%], 卖[MA5 {p['sell_ma5_bias']}%]"
-                )
+                future = loop.run_in_executor(pool, optimize_single_stock_process, code, name, days)
                 
-        time.sleep(random.uniform(0.1, 0.3))
+                try:
+                    result = await asyncio.wait_for(future, timeout=TASK_TIMEOUT)
+                    return result
+                except asyncio.TimeoutError:
+                    print(f"⏰ [{code}] {name}: 任务超时 (> {TASK_TIMEOUT}s)，跳过！")
+                    return None
+                except Exception as e:
+                    print(f"💥 [{code}] 系统级异常: {e}")
+                    return None
+
+        task_list = [sem_task(doc) for doc in stocks]
         
+        for f in tqdm(asyncio.as_completed(task_list), total=len(task_list), desc="Processing"):
+            res = await f
+            if res:
+                code, name, data = res
+                global_collection.update_one({"_id": code}, {"$set": {"ma_strategy": data}})
+                update_count += 1
+                
+                strat_ret = data["total_return"]
+                bench_ret = data["benchmark_return"]
+                p = data["params"]
+                
+                if strat_ret > 30:
+                    icon = "🔥" if strat_ret > bench_ret else "🐢"
+                    tqdm.write(
+                        f"{icon} {name}: 策略回报 {strat_ret}% (基准 {bench_ret}%) | "
+                        f"买[MA20 {p['buy_ma20_bias']}%]"
+                    )
+    
+    client.close()
     print(f"\n✅ 完成！已更新 {update_count} 只股票的均线策略参数。")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
