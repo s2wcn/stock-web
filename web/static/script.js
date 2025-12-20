@@ -224,10 +224,7 @@ function executeFiltering() {
             let rawVal = stock[key];
             if (!rawVal || rawVal === '-' || rawVal === '') return false;
             
-            // 简单的文本包含过滤 (针对长牛标签)
             if (key === 'bull_label') {
-                // 如果设置了min/max其实对字符串无效，这里保留逻辑兼容
-                // 实际建议增加文本筛选器，或者简单跳过字符串列的数值筛选
                 continue; 
             }
 
@@ -293,24 +290,6 @@ function triggerRecalculate() {
     fetch('/api/recalculate', { method: 'POST' });
 }
 
-// [修改] 触发长牛趋势分析
-function triggerTrendAnalysis() {
-    if(!confirm("确定要执行【5年分级】长牛筛选吗？\n\n这需要下载过去5年的K线数据，耗时较长，请耐心等待。")) return;
-    
-    const btn = document.getElementById('trendBtn');
-    btn.disabled = true;
-    
-    fetch('/api/analyze_trends', { method: 'POST' })
-        .then(res => res.json())
-        .then(data => {
-            alert(data.message);
-        })
-        .catch(err => {
-            alert("请求失败");
-            btn.disabled = false;
-        });
-}
-
 function restartService() {
     if(!confirm("确定重启吗？")) return;
     fetch('/api/restart', { method: 'POST' }).then(() => {
@@ -321,30 +300,32 @@ function restartService() {
         setTimeout(() => location.reload(), 3000);
     });
 }
+
 function triggerCrawl() {
     document.getElementById('refreshBtn').disabled = true;
+    // 触发合并后的任务
     fetch('/api/trigger_crawl');
 }
+
 function stopTask() {
     if(!confirm("确定要终止当前任务吗？")) return;
     fetch('/api/stop_crawl', { method: 'POST' }).then(res => res.json()).then(data => {
         alert(data.message);
     });
 }
+
 setInterval(() => {
     fetch('/api/status').then(res => res.json()).then(data => {
         const container = document.getElementById('progress-container');
         const stopBtn = document.getElementById('stopBtn');
         const refreshBtn = document.getElementById('refreshBtn');
         const recalcBtn = document.getElementById('recalcBtn');
-        const trendBtn = document.getElementById('trendBtn'); 
 
         if (data.is_running) {
             container.style.display = 'block';
             stopBtn.style.display = 'inline-block';
             refreshBtn.disabled = true;
             recalcBtn.disabled = true;
-            if(trendBtn) trendBtn.disabled = true; 
             
             const pct = data.total > 0 ? Math.round(data.current/data.total*100) : 0;
             document.getElementById('progress-bar').style.width = pct + "%";
@@ -357,7 +338,6 @@ setInterval(() => {
             stopBtn.style.display = 'none';
             refreshBtn.disabled = false;
             recalcBtn.disabled = false;
-            if(trendBtn) trendBtn.disabled = false; 
         }
     });
 }, 1500);
@@ -403,10 +383,6 @@ function loadChart(code, fieldKey, fieldLabel, suffix = '') {
         }, true);
     });
 }
-
-// ... (以下定时任务和筛选模版代码逻辑保持不变，为节省篇幅略去，实际使用请保留原文件的这部分代码) ...
-// 请确保将原文件 script.js 中从 'var scheduleModal' 到底部的代码完整保留。
-// (为保证文件完整性，这里我还是贴出剩余部分)
 
 var scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
 

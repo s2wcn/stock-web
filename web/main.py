@@ -7,7 +7,7 @@ import math
 import random
 import pandas as pd
 import numpy as np
-from scipy import stats  # 需 pip install scipy
+from scipy import stats
 from fastapi import FastAPI, Request, BackgroundTasks, Body
 from fastapi.templating import Jinja2Templates
 from fastapi.responses import HTMLResponse
@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from datetime import datetime
+from tzlocal import get_localzone  # [新增] 获取本地时区
 
 import akshare as ak
 
@@ -24,7 +25,8 @@ from database import stock_collection, config_collection, template_collection
 import crawler_hk as crawler
 from crawler_state import status 
 
-scheduler = BackgroundScheduler()
+# [修改] 使用服务器本地时区初始化调度器
+scheduler = BackgroundScheduler(timezone=str(get_localzone()))
 
 # 默认定时配置
 DEFAULT_SCHEDULE = {
@@ -36,15 +38,152 @@ DEFAULT_SCHEDULE = {
 
 # === 任务逻辑区域 ===
 
+# [修改] 长牛趋势分析逻辑 (含 ROE 和 成交额过滤)
+def analyze_trend_task():
+    print("🚀 开始执行【5年长牛分级筛选】任务...")
+    
+    # [新增] 获取 latest_data 以便检查 ROE
+    cursor = stock_collection.find({}, {"_id": 1, "name": 1, "latest_data": 1})
+    all_stocks = list(cursor)
+    total = len(all_stocks)
+    
+    status.start(total)
+    status.message = "正在初始化趋势分析..."
+    
+    DAYS_PER_YEAR = 250        
+    MIN_R_SQUARED = 0.80       
+    MIN_ANNUAL_RETURN = 10.0   
+    MAX_ANNUAL_RETURN = 60.0   
+    MIN_TURNOVER = 5_000_000   # [新增] 最低日均成交额 500万
+
+    for i, doc in enumerate(all_stocks):
+        if status.should_stop:
+            status.finish("趋势分析已终止")
+            return
+
+        code = doc["_id"]
+        name = doc.get("name", "Unknown")
+        
+        # [新增] 过滤 8XXXX 股票 (RMB柜台)
+        if code.startswith("8"):
+            continue
+
+        # [新增] 优化建议2: 基本面支撑，ROE > 0
+        latest = doc.get("latest_data", {})
+        roe = latest.get("股东权益回报率(%)")
+        if roe is None or roe <= 0:
+            # 即使不符合，也要清空旧的 bull_label 避免误导，或直接跳过
+            # 这里选择直接跳过计算，并在数据库中移除评级
+            stock_collection.update_one({"_id": code}, {"$unset": {"bull_label": "", "trend_analysis": ""}})
+            status.update(i + 1, message=f"跳过(ROE低): {name}")
+            continue
+
+        status.update(i + 1, message=f"正在分析趋势: {name}")
+
+        try:
+            # 1. 获取数据
+            df = ak.stock_hk_daily(symbol=code, adjust="qfq")
+            
+            bull_label = None  
+            trend_data = {}    
+
+            if df is not None and not df.empty:
+                # 预处理：计算估算成交额 (Close * Volume)
+                # 注意：akshare 返回列名通常为 'volume', 'close'
+                if 'close' in df.columns and 'volume' in df.columns:
+                    df['amount_est'] = df['close'].astype(float) * df['volume'].astype(float)
+                else:
+                    df['amount_est'] = 0
+
+                # 2. 倒序循环：5年 -> 4年 ...
+                for year in [5, 4, 3, 2, 1]:
+                    required_days = year * DAYS_PER_YEAR
+                    
+                    if len(df) < required_days * 0.8:
+                        continue
+                    
+                    # 截取对应时间段
+                    df_subset = df.iloc[-required_days:].copy()
+                    
+                    # [新增] 优化建议1: 成交额过滤
+                    # 计算该周期内的日均成交额
+                    avg_turnover = df_subset['amount_est'].mean()
+                    if avg_turnover < MIN_TURNOVER:
+                        continue # 流动性不足，跳过该周期或该股
+
+                    y_data = df_subset['close'].astype(float).values
+                    
+                    if np.any(y_data <= 0):
+                        continue
+                        
+                    x_data = np.arange(len(y_data))
+                    log_y_data = np.log(y_data)
+                    
+                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, log_y_data)
+                    
+                    r_squared = r_value ** 2
+                    annualized_return = (np.exp(slope * DAYS_PER_YEAR) - 1) * 100
+                    
+                    if (r_squared >= MIN_R_SQUARED and 
+                        slope > 0 and 
+                        MIN_ANNUAL_RETURN <= annualized_return <= MAX_ANNUAL_RETURN):
+                        
+                        bull_label = f"长牛{year}年"
+                        trend_data = {
+                            "r_squared": round(r_squared, 4),
+                            "annual_return_pct": round(annualized_return, 2),
+                            "slope": round(slope, 6),
+                            "period_years": year,
+                            "avg_turnover": round(avg_turnover, 0), # 记录一下成交额
+                            "updated_at": datetime.now()
+                        }
+                        break 
+
+            # 更新数据库
+            update_op = {}
+            if bull_label:
+                update_op["$set"] = {
+                    "bull_label": bull_label,
+                    "trend_analysis": trend_data
+                }
+            else:
+                # 如果不符合长牛，移除相关标签
+                update_op["$unset"] = {
+                    "bull_label": "",
+                    "trend_analysis": ""
+                }
+
+            stock_collection.update_one({"_id": code}, update_op)
+            
+            time.sleep(random.uniform(0.5, 1.0))
+            
+        except Exception as e:
+            print(f"⚠️ 分析 {code} 失败: {e}")
+            continue
+
+    status.finish("趋势分析完成")
+    print("✅ 趋势分析任务结束")
+
+# [修改] 动态任务包装器：合并 爬虫 + 趋势分析
 def dynamic_task_wrapper():
     if not status.is_running:
         try:
             print("🔄 热加载爬虫模块...")
             importlib.reload(crawler)
+            
+            # 1. 运行爬虫
             crawler.run_crawler_task()
+            
+            # 2. 爬虫完成后，如果未被停止，自动运行趋势分析
+            if not status.should_stop:
+                print("🔗 爬虫结束，自动启动趋势分析...")
+                # 由于爬虫结束会把 status 设为 finish，我们需要手动重置一下状态或直接调用
+                # 注意：analyze_trend_task 内部会调用 status.start() 重置状态
+                analyze_trend_task()
+                
         except Exception as e:
             print(f"❌ 任务出错: {e}")
-            status.finish("任务异常")
+            status.finish(f"任务异常: {e}")
 
 def recalculate_db_task():
     print("🔄 开始执行离线补全指标...")
@@ -60,6 +199,11 @@ def recalculate_db_task():
             return
 
         code = doc["_id"]
+        # [新增] 补全时也顺手清理 8XXXX
+        if code.startswith("8"):
+             stock_collection.delete_one({"_id": code})
+             continue
+
         name = doc["name"]
         status.update(i + 1, message=f"正在清洗重算: {name}")
         
@@ -70,7 +214,6 @@ def recalculate_db_task():
         latest_record = {}
 
         for item in history:
-            # 辅助取值函数
             def get_f(keys):
                 for k in keys:
                     val = item.get(k)
@@ -91,7 +234,6 @@ def recalculate_db_task():
             roa = get_f(['总资产回报率(%)', 'ROA'])
             net_margin = get_f(['销售净利率(%)', '销售净利率'])
 
-            # 清除旧指标
             derived_keys = [
                 'PEG', 'PEGY', '彼得林奇估值', '净现比', '市现率', 
                 '财务杠杆', '总资产周转率', '格雷厄姆数', '合理股价'
@@ -99,7 +241,6 @@ def recalculate_db_task():
             for key in derived_keys:
                 item.pop(key, None)
 
-            # 重新计算逻辑
             if pe and pe > 0 and growth and growth != 0:
                 item['PEG'] = round(pe / growth, 4)
 
@@ -108,7 +249,6 @@ def recalculate_db_task():
                 if total_return > 0:
                     item['PEGY'] = round(pe / total_return, 4)
             
-            # 合理股价 (格雷厄姆成长公式)
             if eps is not None and growth is not None:
                 fair_price = eps * (8.5 + 2 * growth)
                 if fair_price > 0:
@@ -143,127 +283,30 @@ def recalculate_db_task():
     status.finish("全库清洗重算完成")
     print("✅ 全库清洗重算完成")
 
-# === [修改] 长牛趋势分析逻辑 (5年分级版) ===
-def analyze_trend_task():
-    print("🚀 开始执行【5年长牛分级筛选】任务...")
-    
-    cursor = stock_collection.find({}, {"_id": 1, "name": 1})
-    all_stocks = list(cursor)
-    total = len(all_stocks)
-    
-    status.start(total)
-    status.message = "正在初始化趋势分析..."
-    
-    DAYS_PER_YEAR = 250        # 一年的交易日近似值
-    MIN_R_SQUARED = 0.80       # 拟合度阈值
-    # 年化收益阈值：10% - 60%
-    MIN_ANNUAL_RETURN = 10.0   
-    MAX_ANNUAL_RETURN = 60.0   
-
-    for i, doc in enumerate(all_stocks):
-        if status.should_stop:
-            status.finish("趋势分析已终止")
-            return
-
-        code = doc["_id"]
-        name = doc.get("name", "Unknown")
-        status.update(i + 1, message=f"正在分析趋势: {name}")
-
-        try:
-            # 1. 获取尽可能长的历史数据 (前复权)
-            # 假设 akshare 接口返回足够长的数据，或者返回全部数据
-            df = ak.stock_hk_daily(symbol=code, adjust="qfq")
-            
-            bull_label = None  # 结果标签：长牛5年 / 长牛4年 ...
-            trend_data = {}    # 存储匹配周期的具体指标
-
-            if df is not None and not df.empty:
-                # 2. 倒序循环：5年 -> 4年 -> ... -> 1年
-                # 只要匹配到最长的，就 break
-                for year in [5, 4, 3, 2, 1]:
-                    required_days = year * DAYS_PER_YEAR
-                    
-                    # 数据长度检查（允许20%的缺失）
-                    if len(df) < required_days * 0.8:
-                        continue
-                    
-                    # 截取对应时间段
-                    df_subset = df.iloc[-required_days:].copy()
-                    y_data = df_subset['close'].astype(float).values
-                    
-                    # 数据有效性检查
-                    if np.any(y_data <= 0):
-                        continue
-                        
-                    x_data = np.arange(len(y_data))
-                    log_y_data = np.log(y_data)
-                    
-                    # 线性回归
-                    slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, log_y_data)
-                    
-                    r_squared = r_value ** 2
-                    annualized_return = (np.exp(slope * DAYS_PER_YEAR) - 1) * 100
-                    
-                    # 判定标准
-                    if (r_squared >= MIN_R_SQUARED and 
-                        slope > 0 and 
-                        MIN_ANNUAL_RETURN <= annualized_return <= MAX_ANNUAL_RETURN):
-                        
-                        bull_label = f"长牛{year}年"
-                        trend_data = {
-                            "r_squared": round(r_squared, 4),
-                            "annual_return_pct": round(annualized_return, 2),
-                            "slope": round(slope, 6),
-                            "period_years": year,
-                            "updated_at": datetime.now()
-                        }
-                        # 找到符合的最长年份，跳出循环
-                        break 
-
-            # 更新数据库
-            update_fields = {
-                "bull_label": bull_label,       # 新字段: 存储评级字符串
-                "trend_analysis": trend_data    # 存储对应评级的详细数据
-            }
-            # 清理旧字段 (可选)
-            # update_fields["is_slow_bull"] = None 
-
-            stock_collection.update_one(
-                {"_id": code},
-                {"$set": update_fields}
-            )
-            
-            # 随机延时防封
-            time.sleep(random.uniform(0.5, 1.0))
-            
-        except Exception as e:
-            print(f"⚠️ 分析 {code} 失败: {e}")
-            continue
-
-    status.finish("趋势分析完成")
-    print("✅ 趋势分析任务结束")
-
 # === 调度器逻辑 ===
 def update_scheduler_job(config: dict):
     try:
         hour = config.get('hour', 17)
         minute = config.get('minute', 0)
         sched_type = config.get('type', 'daily')
-        day_of_week = config.get('day_of_week', '5') # 0=Mon, 6=Sun
+        day_of_week = config.get('day_of_week', '5')
+        
+        # [修改] 使用正确的时区
+        local_tz = str(get_localzone())
 
         if scheduler.get_job('crawler_job'):
             scheduler.remove_job('crawler_job')
         
         if sched_type == 'weekly':
-            trigger = CronTrigger(day_of_week=int(day_of_week), hour=hour, minute=minute)
+            trigger = CronTrigger(day_of_week=int(day_of_week), hour=hour, minute=minute, timezone=local_tz)
             week_map = ["一", "二", "三", "四", "五", "六", "日"]
             desc = f"每周{week_map[int(day_of_week)]}"
         else:
-            trigger = CronTrigger(hour=hour, minute=minute)
+            trigger = CronTrigger(hour=hour, minute=minute, timezone=local_tz)
             desc = "每天"
 
         scheduler.add_job(dynamic_task_wrapper, trigger, id='crawler_job')
-        print(f"⏰ 定时任务已更新为: {desc} {hour:02d}:{minute:02d}")
+        print(f"⏰ 定时任务已更新为: {desc} {hour:02d}:{minute:02d} ({local_tz})")
         return True
     except Exception as e:
         print(f"❌ 更新定时任务失败: {e}")
@@ -287,19 +330,16 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# === 字段配置 (修改了趋势相关字段) ===
+# === 字段配置 ===
 COLUMN_CONFIG = [
-    # 0. 静态
     {
         "key": "所属行业", "label": "行业", 
         "desc": "公司所属行业板块", "tip": "按东财/GICS分类标准划分",
         "no_sort": True, "no_chart": True
     },
-    
-    # [修改] 长牛分级结果
     {
         "key": "bull_label", "label": "长牛评级", 
-        "desc": "长牛分级筛选", "tip": "基于过去1-5年走势算法筛选。<br>R²>0.8 且 年化10%-60%<br><b>取符合条件的最长时间段</b>", 
+        "desc": "长牛分级筛选", "tip": "基于5年走势算法筛选。<br>需满足：<br>1. R²>0.8<br>2. 年化10%-60%<br>3. <b>日均成交 > 500万</b><br>4. <b>ROE > 0</b>", 
         "no_chart": True
     },
     {
@@ -313,7 +353,6 @@ COLUMN_CONFIG = [
         "suffix": "%", "no_chart": True
     },
 
-    # 0.5 行情
     {
         "key": "昨收", "label": "昨收", 
         "desc": "最新收盘价", "tip": "最近一个交易日的收盘价格", 
@@ -344,7 +383,6 @@ COLUMN_CONFIG = [
         "suffix": "%"
     },
 
-    # 1. 估值
     {
         "key": "市盈率", "label": "市盈率(PE)", 
         "desc": "回本年限", 
@@ -390,7 +428,6 @@ COLUMN_CONFIG = [
         "desc": "营运能力", 
         "tip": "营业收入 ÷ 总资产"
     },
-    # 2. 成长
     {
         "key": "基本每股收益同比增长率", "label": "EPS同比%", 
         "desc": "盈利增速", "tip": "衡量归属股东利润的增长速度", "suffix": "%"
@@ -403,7 +440,6 @@ COLUMN_CONFIG = [
         "key": "营业利润率同比增长率", "label": "利润率同比%", 
         "desc": "获利能力变动", "tip": "反映产品竞争力的变化趋势", "suffix": "%"
     },
-    # 3. 基础
     {"key": "基本每股收益(元)", "label": "EPS(元)", "desc": "每股所获利润", "tip": ""},
     {"key": "每股净资产(元)", "label": "BPS(元)", "desc": "每股归属权益", "tip": ""},
     {"key": "每股经营现金流(元)", "label": "每股现金流", "desc": "每股进账现金", "tip": ""},
@@ -450,7 +486,7 @@ async def read_root(request: Request):
             "date": latest.get("date", "-"),
             "intro": doc.get("intro") or latest.get("企业简介", ""),
             "is_ggt": doc.get("is_ggt", False),
-            "bull_label": doc.get("bull_label") # 获取新的评级字段
+            "bull_label": doc.get("bull_label") 
         }
         
         for col in COLUMN_CONFIG:
@@ -500,7 +536,7 @@ async def trigger_crawl():
     if status.is_running:
         return {"success": False, "message": "任务正在运行中，请勿重复触发"}
     scheduler.add_job(dynamic_task_wrapper)
-    return {"success": True, "message": "后台任务已启动"}
+    return {"success": True, "message": "后台任务已启动 (爬虫 + 自动趋势分析)"}
 
 @app.post("/api/stop_crawl")
 async def stop_crawl():
@@ -515,13 +551,6 @@ async def trigger_recalculate(background_tasks: BackgroundTasks):
         return {"success": False, "message": "后台已有任务在运行，请稍候..."}
     background_tasks.add_task(recalculate_db_task)
     return {"success": True, "message": "已开始补全计算，请留意右上角进度条"}
-
-@app.post("/api/analyze_trends")
-async def trigger_trends(background_tasks: BackgroundTasks):
-    if status.is_running:
-        return {"success": False, "message": "后台已有任务在运行，请稍候..."}
-    background_tasks.add_task(analyze_trend_task)
-    return {"success": True, "message": "已开始执行5年长牛趋势分析，请留意右上角进度条"}
 
 @app.get("/api/status")
 async def get_status():

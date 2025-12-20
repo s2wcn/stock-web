@@ -25,7 +25,6 @@ def check_critical_error(e):
     检查是否为严重连接错误（IP被封/连接中断）
     """
     err_str = str(e)
-    # 关键词匹配
     if "Remote end closed connection" in err_str or "Connection aborted" in err_str or "RemoteDisconnected" in err_str:
         print(f"🛑 严重错误检测: {err_str}")
         status.message = "❌ 警告：IP可能被封或连接中断，任务强制终止！"
@@ -34,9 +33,6 @@ def check_critical_error(e):
     return False
 
 def is_derivative(name):
-    """
-    判断是否为衍生品（窝轮、牛熊证等）
-    """
     if not name: return False
     keywords = ['购', '沽', '牛', '熊', '界内']
     for kw in keywords:
@@ -83,29 +79,21 @@ def get_hk_codes_from_sina():
         return {}
 
 def get_market_performance(code, h_share_capital=None):
-    """
-    获取行情数据并计算换手率
-    :param h_share_capital: H股股本（用于计算换手率）
-    """
     if status.should_stop: return {} 
 
     performance = {}
     try:
         time.sleep(random.uniform(0.5, 1.0))
-
-        # 使用新浪接口获取日线
         df = ak.stock_hk_daily(symbol=code, adjust="")
         
         if df is None or df.empty:
             return performance
 
         df = df.sort_values(by="date")
-        
         if len(df) > 45:
             df = df.iloc[-45:]
 
         latest_row = df.iloc[-1]
-        
         close_val = float(latest_row["close"])
         open_val = float(latest_row["open"])
         volume_val = float(latest_row["volume"])
@@ -113,19 +101,15 @@ def get_market_performance(code, h_share_capital=None):
         performance["昨收"] = close_val
         performance["昨成交量"] = volume_val
         
-        # [修改] 计算换手率 = (成交量 / H股股本) * 100%
-        # 注意：如果 h_share_capital 为 0 或 None，则无法计算
         turnover_rate = 0.0
         if h_share_capital and h_share_capital > 0:
             try:
-                # 换手率(%)
                 turnover_rate = (volume_val / h_share_capital) * 100
             except:
                 turnover_rate = 0.0
         
         performance["昨换手率"] = round(turnover_rate, 2)
 
-        # 昨涨跌幅计算
         if len(df) >= 2:
             prev_close = float(df.iloc[-2]["close"])
             if prev_close > 0:
@@ -141,15 +125,12 @@ def get_market_performance(code, h_share_capital=None):
                 performance["昨涨跌幅"] = 0.0
         
         total_rows = len(df)
-        
-        # 近一周
         if total_rows >= 6:
             prev_week_close = float(df.iloc[-6]["close"])
             if prev_week_close > 0:
                 pct = (close_val - prev_week_close) / prev_week_close * 100
                 performance["近一周涨跌幅"] = round(pct, 2)
         
-        # 近一月
         if total_rows >= 21:
             prev_month_close = float(df.iloc[-21]["close"])
             if prev_month_close > 0:
@@ -165,9 +146,7 @@ def get_market_performance(code, h_share_capital=None):
 
 def fetch_and_save_single_stock(code, name, is_ggt=None):
     if status.should_stop: return 
-
-    if is_derivative(name):
-        return
+    if is_derivative(name): return
 
     try:
         # === 1. 主数据 ===
@@ -180,10 +159,8 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
             return
 
         if df is None or df.empty: return
-        
         time.sleep(random.uniform(0.5, 1.0))
 
-        # 标准化日期列
         date_col = None
         for col in ['日期', 'date', 'Date', '统计日期']:
             if col in df.columns:
@@ -198,17 +175,12 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
 
         df[date_col] = pd.to_datetime(df[date_col]).dt.strftime("%Y-%m-%d")
         df.rename(columns={date_col: 'date'}, inplace=True)
-        
-        # [修改] 提前排序，以便提取最新的股本数据
         df = df.sort_values(by='date')
 
-        # [新增] 提取最新的 H股股本
         h_share_capital = 0.0
         try:
             if not df.empty:
                 last_row = df.iloc[-1]
-                # 注意：这里字段名必须与 akshare 返回的一致，通常在 NUMERIC_FIELDS 中有定义
-                # "已发行股本-H股(股)"
                 if "已发行股本-H股(股)" in last_row:
                     val = last_row["已发行股本-H股(股)"]
                     if pd.notna(val):
@@ -269,8 +241,6 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
         if status.should_stop: return 
 
         # === 5. 数据处理与存储 ===
-        # df 已经在上面排序过了，这里不需要再 sort
-        
         existing_doc = stock_collection.find_one({"_id": code})
         history_map = {item["date"]: item for item in existing_doc.get("history", [])} if existing_doc else {}
 
@@ -328,8 +298,6 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
                 if total_return > 0:
                     new_data['PEGY'] = round(pe / total_return, 4)
 
-            # [修改] 计算合理股价 (原彼得林奇估值)
-            # EPS × (8.5 + 2 × G)
             if growth is not None and eps is not None:
                 fair_price = eps * (8.5 + 2 * growth)
                 if fair_price > 0:
@@ -390,6 +358,11 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
 def run_crawler_task():
     print(f"[{datetime.now()}] 🚀 开始 MongoDB 采集任务 (HK)...")
     
+    # [新增] 清理所有以 8 开头的股票 (人民币结算)
+    print("🧹 正在清理 8XXXX (人民币柜台) 重复数据...")
+    del_result = stock_collection.delete_many({"_id": {"$regex": "^8"}})
+    print(f"✅ 已删除 {del_result.deleted_count} 条重复数据")
+
     code_map = get_hk_codes_from_sina()
     if status.should_stop: 
         status.finish(status.message)
@@ -399,7 +372,6 @@ def run_crawler_task():
         return
 
     ggt_codes = get_ggt_codes()
-    
     if ggt_codes is not None:
         print(f"⚡️ 获取到最新名单，正在批量刷新全库港股通状态...")
         try:
@@ -416,9 +388,14 @@ def run_crawler_task():
         except Exception as e:
             print(f"❌ 批量刷新状态出错: {e}")
 
-    all_codes = list(code_map.items())
+    # [修改] 过滤代码列表，排除 8 开头的股票
+    all_codes = [
+        (code, name) for code, name in code_map.items() 
+        if not code.startswith("8")
+    ]
+    
     total = len(all_codes)
-    print(f"📊 本次任务将抓取 {total} 只股票...")
+    print(f"📊 本次任务将抓取 {total} 只股票 (已过滤 8XXXX)...")
     
     status.start(total)
 
