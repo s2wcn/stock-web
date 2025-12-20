@@ -8,25 +8,22 @@ const g_pageSize = 50;
 let g_isLoading = false;
 let g_hasMore = true;
 let g_totalCount = 0;
-let g_loadedData = []; // 缓存当前显示的所有数据用于导出
+let g_loadedData = []; 
 
 // 查询条件
 let g_queryState = {
     search: "",
     sortKey: "",
     sortDir: "asc",
-    filters: {} // {key: {min: 1, max: 2}}
+    filters: {} 
 };
-// 维护活跃的过滤器UI状态
 const activeFilters = {}; 
 
 document.addEventListener("DOMContentLoaded", function(){
-    // 初始化工具提示
     document.querySelectorAll('thead [data-bs-toggle="tooltip"]').forEach(el => {
         new bootstrap.Tooltip(el, {html: true});
     });
 
-    // 绑定滚动加载
     const container = document.querySelector('.table-container');
     if (container) {
         container.addEventListener('scroll', function() {
@@ -38,7 +35,6 @@ document.addEventListener("DOMContentLoaded", function(){
         });
     }
 
-    // 初始加载
     loadData(true);
 });
 
@@ -57,7 +53,6 @@ function loadData(isReset = false) {
         g_hasMore = true;
         g_loadedData = [];
         document.getElementById('tableBody').innerHTML = ''; 
-        // 重置排序图标
         document.querySelectorAll('.sort-icon').forEach(el => el.innerText = '');
         const th = document.querySelector(`th[data-key="${g_queryState.sortKey}"]`);
         if(th) {
@@ -65,7 +60,7 @@ function loadData(isReset = false) {
         }
         showLoading(true);
     } else {
-        showLoading(false); // 移除旧的loading，添加底部的
+        showLoading(false); 
         appendLoadingRow();
     }
 
@@ -142,12 +137,9 @@ function appendEndMessage() {
     }
 }
 
-// === 渲染逻辑 (移植自原 renderTable) ===
+// === 渲染逻辑 ===
 function renderRows(batch) {
     const tbody = document.getElementById('tableBody');
-    
-    // 关闭旧 Tooltip
-    // 注意：这里不需要手动 dispose 以前的，因为是追加模式，旧的还在
     
     const rowsHtml = batch.map(stock => {
         let closePrice = 0;
@@ -161,7 +153,6 @@ function renderRows(batch) {
                 return `<td><span class="text-muted">-</span></td>`;
             }
 
-            // 渲染长牛评级徽章
             if (col.key === 'bull_label') {
                 if (val.includes('5年')) return `<td><span class="badge bg-danger">👑 长牛5年</span></td>`;
                 if (val.includes('4年')) return `<td><span class="badge bg-warning text-dark">🔥 长牛4年</span></td>`;
@@ -190,7 +181,6 @@ function renderRows(batch) {
                 displayVal = `<span class="text-danger">${displayVal}</span>`;
             }
 
-            // === 估值与质量勋章逻辑 START ===
             if (!isNaN(num)) {
                 let badge = '';
                 if (col.key === 'PEG') {
@@ -216,7 +206,6 @@ function renderRows(batch) {
 
                 if (badge) displayVal += badge;
             }
-            // === 估值与质量勋章逻辑 END ===
             
             if (col.no_chart) {
                 return `<td>${displayVal}</td>`;
@@ -250,7 +239,6 @@ function renderRows(batch) {
     
     tbody.insertAdjacentHTML('beforeend', rowsHtml);
 
-    // 重新激活新添加元素的 tooltip
     tbody.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(el => {
         if (!bootstrap.Tooltip.getInstance(el)) {
             new bootstrap.Tooltip(el, {html: true});
@@ -266,11 +254,18 @@ function confirmFilter(btn, colKey) {
     const maxVal = popup.querySelector(`#max-${CSS.escape(colKey)}`).value;
     
     if (!activeFilters[colKey]) activeFilters[colKey] = {};
-    activeFilters[colKey].min = minVal === "" ? null : parseFloat(minVal);
-    activeFilters[colKey].max = maxVal === "" ? null : parseFloat(maxVal);
+    
+    // [修改] 针对文本字段，不执行 parseFloat
+    if (["所属行业", "bull_label"].includes(colKey)) {
+        activeFilters[colKey].min = minVal; 
+        activeFilters[colKey].max = null;   
+    } else {
+        activeFilters[colKey].min = minVal === "" ? null : parseFloat(minVal);
+        activeFilters[colKey].max = maxVal === "" ? null : parseFloat(maxVal);
+    }
     
     updateHeaderStyle(colKey);
-    executeFiltering(); // 触发查询
+    executeFiltering(); 
     
     popup.style.display = 'none';
     setTimeout(() => { popup.style.display = ''; }, 500);
@@ -279,7 +274,8 @@ function confirmFilter(btn, colKey) {
 function clearFilter(btn, colKey) {
     const popup = btn.closest('.filter-popup');
     popup.querySelector(`#min-${CSS.escape(colKey)}`).value = '';
-    popup.querySelector(`#max-${CSS.escape(colKey)}`).value = '';
+    const maxInput = popup.querySelector(`#max-${CSS.escape(colKey)}`);
+    if(maxInput) maxInput.value = '';
     
     if (activeFilters[colKey]) {
         activeFilters[colKey] = { min: null, max: null };
@@ -291,7 +287,6 @@ function clearFilter(btn, colKey) {
 function updateHeaderStyle(colKey) {
     const th = document.querySelector(`th[data-key="${colKey}"]`);
     const filter = activeFilters[colKey];
-    // 只有当 min 或 max 有值时才算 active
     if (filter && (filter.min !== null || filter.max !== null)) th.classList.add('filter-active');
     else th.classList.remove('filter-active');
 }
@@ -300,7 +295,6 @@ function executeFiltering() {
     const searchVal = document.getElementById('globalSearchInput').value.trim();
     g_queryState.search = searchVal;
     
-    // 清理空filter
     const cleanFilters = {};
     for (const [key, range] of Object.entries(activeFilters)) {
         if (range.min !== null || range.max !== null) {
@@ -322,7 +316,7 @@ function sortTable(key, type) {
     loadData(true);
 }
 
-// === API 交互 (保持不变，除 export) ===
+// === API 交互 ===
 function triggerRecalculate() {
     if(!confirm("确定补全吗？")) return;
     document.getElementById('recalcBtn').disabled = true;
@@ -370,7 +364,6 @@ setInterval(() => {
             document.getElementById('progress-msg').innerText = `${data.message}`;
         } else {
             if (container.style.display === 'block') {
-                // 任务刚结束，刷新一下数据
                 loadData(true);
             }
             container.style.display = 'none';
@@ -381,7 +374,7 @@ setInterval(() => {
     });
 }, 1500);
 
-// === 图表与模态框逻辑 (基本保持不变) ===
+// === 图表与模态框 ===
 var myChart = echarts.init(document.getElementById('chart-container'));
 var chartModal = new bootstrap.Modal(document.getElementById('chartModal'));
 document.getElementById('chartModal').addEventListener('shown.bs.modal', () => myChart.resize());
@@ -389,8 +382,6 @@ document.getElementById('chartModal').addEventListener('shown.bs.modal', () => m
 function loadChart(code, fieldKey, fieldLabel, suffix = '') {
     chartModal.show(); 
     myChart.showLoading();
-    
-    // 从缓存或 DOM 找名字比较麻烦，这里简单处理，后台接口会返回名字
     document.getElementById('chartTitle').innerText = `加载中... - ${fieldLabel}`;
 
     fetch(`/api/history/${code}`).then(res => res.json()).then(data => {
@@ -424,7 +415,7 @@ function loadChart(code, fieldKey, fieldLabel, suffix = '') {
     });
 }
 
-// === 定时任务 Modal (保持不变) ===
+// === 定时任务 Modal ===
 var scheduleModal = new bootstrap.Modal(document.getElementById('scheduleModal'));
 function toggleWeekSelect() {
     const isWeekly = document.getElementById('typeWeekly').checked;
@@ -447,13 +438,11 @@ function openScheduleModal() {
         });
 }
 function saveSchedule() {
-    // ... 原有逻辑 ...
     const hour = parseInt(document.getElementById('schedHour').value);
     const minute = parseInt(document.getElementById('schedMinute').value);
     const type = document.getElementById('typeWeekly').checked ? 'weekly' : 'daily';
     const day_of_week = document.getElementById('schedWeek').value;
     
-    // 简略验证
     if (isNaN(hour)) return;
 
     fetch('/api/schedule', {
@@ -466,10 +455,9 @@ function saveSchedule() {
     });
 }
 
-// === 高级筛选 Modal (适配 g_queryState) ===
+// === 高级筛选 Modal ===
 var advFilterModal = new bootstrap.Modal(document.getElementById('advancedFilterModal'));
 function openAdvancedFilterModal() {
-    // 填充下拉
     const select = document.getElementById('advFilterSelect');
     select.innerHTML = '';
     g_columns.forEach(col => {
@@ -480,7 +468,6 @@ function openAdvancedFilterModal() {
         select.appendChild(option);
     });
 
-    // 渲染当前已选
     const listContainer = document.getElementById('activeFiltersList');
     listContainer.innerHTML = '';
     let hasActive = false;
@@ -524,13 +511,11 @@ function renderAdvFilterRow(key, min, max) {
 }
 
 function applyAdvancedFilter() {
-    // 清空旧的
     for (const key in activeFilters) {
         activeFilters[key] = { min: null, max: null };
         updateHeaderStyle(key);
     }
     
-    // 读取 Modal 中的
     document.querySelectorAll('.adv-filter-row').forEach(row => {
         const key = row.getAttribute('data-key');
         const minVal = row.querySelector('.adv-min').value;
@@ -538,6 +523,7 @@ function applyAdvancedFilter() {
         
         if (minVal !== '' || maxVal !== '') {
              if (!activeFilters[key]) activeFilters[key] = {};
+             // 简单处理：高级筛选暂只支持数值，文本可扩展
              activeFilters[key].min = minVal === "" ? null : parseFloat(minVal);
              activeFilters[key].max = maxVal === "" ? null : parseFloat(maxVal);
              updateHeaderStyle(key);
@@ -610,7 +596,6 @@ function deleteCurrentTemplate() {
 }
 
 function exportToClipboard() {
-    // 导出当前已加载的所有数据
     if (!g_loadedData || g_loadedData.length === 0) {
         alert("当前列表中没有数据可导出！");
         return;

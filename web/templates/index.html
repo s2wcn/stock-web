@@ -110,12 +110,21 @@
                             </div>
                         {% endif %}
                         <div class="filter-popup" onclick="event.stopPropagation()">
-                            <span class="filter-label">筛选 {{ col.label }}:</span>
-                            <div class="filter-input-group">
-                                <input type="number" class="form-control form-control-sm filter-input" placeholder="Min" id="min-{{ col.key }}">
-                                <span class="text-muted">-</span>
-                                <input type="number" class="form-control form-control-sm filter-input" placeholder="Max" id="max-{{ col.key }}">
-                            </div>
+                            {% if col.key in ['所属行业', 'bull_label'] %}
+                                <span class="filter-label">搜索 {{ col.label }}:</span>
+                                <div class="filter-input-group">
+                                    <input type="text" class="form-control form-control-sm filter-input" style="width: 100%" placeholder="关键词..." id="min-{{ col.key }}">
+                                    <input type="hidden" id="max-{{ col.key }}">
+                                </div>
+                            {% else %}
+                                <span class="filter-label">筛选 {{ col.label }}:</span>
+                                <div class="filter-input-group">
+                                    <input type="number" class="form-control form-control-sm filter-input" placeholder="Min" id="min-{{ col.key }}">
+                                    <span class="text-muted">-</span>
+                                    <input type="number" class="form-control form-control-sm filter-input" placeholder="Max" id="max-{{ col.key }}">
+                                </div>
+                            {% endif %}
+                            
                             <div class="d-flex justify-content-between pt-2 border-top">
                                 <button class="btn btn-light btn-sm px-3" style="font-size: 12px;" onclick="clearFilter(this, '{{ col.key }}')">清除</button>
                                 <button class="btn btn-primary btn-sm px-3" style="font-size: 12px;" onclick="confirmFilter(this, '{{ col.key }}')">确认</button>

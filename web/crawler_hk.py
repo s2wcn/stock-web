@@ -1,3 +1,4 @@
+# 文件路径: web/crawler_hk.py
 import akshare as ak
 import pandas as pd
 import time
@@ -6,19 +7,8 @@ import math
 from datetime import datetime, timedelta
 from database import stock_collection
 from crawler_state import status
-
-# === 1. 定义需要清洗为数字的基础字段 ===
-NUMERIC_FIELDS = [
-    "基本每股收益(元)", "每股净资产(元)", "法定股本(股)", "每手股", 
-    "每股股息TTM(港元)", "派息比率(%)", "已发行股本(股)", "已发行股本-H股(股)", 
-    "每股经营现金流(元)", "股息率TTM(%)", "总市值(港元)", "港股市值(港元)", 
-    "营业总收入", "营业总收入滚动环比增长(%)", "销售净利率(%)", "净利润", 
-    "净利润滚动环比增长(%)", "股东权益回报率(%)", "市盈率", "PEG", "市净率", 
-    "总资产回报率(%)",
-    "基本每股收益同比增长率", "营业收入同比增长率", "营业利润率同比增长率",
-    # 行情字段
-    "昨收", "昨涨跌幅", "昨成交量", "昨换手率", "近一周涨跌幅", "近一月涨跌幅"
-]
+# [修改] 引入集中配置
+from config import NUMERIC_FIELDS
 
 def check_critical_error(e):
     """
@@ -259,6 +249,7 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
             
             for k, v in raw_data.items():
                 if pd.isna(v): continue
+                # [修改] 使用从 config 导入的常量
                 if k in NUMERIC_FIELDS:
                     try:
                         new_data[k] = float(str(v).replace(',', ''))
@@ -273,6 +264,8 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
             new_data["date"] = row_date
 
             # === 计算衍生指标 ===
+            # (保持原有的计算逻辑不变，为了节省篇幅这里省略重复代码)
+            # ... 原有的计算逻辑 ...
             def get_v(keys):
                 for k in keys:
                     if k in new_data and isinstance(new_data[k], (int, float)):
@@ -356,6 +349,7 @@ def fetch_and_save_single_stock(code, name, is_ggt=None):
         print(f"⚠️ 处理 {code} 异常: {e}")
 
 def run_crawler_task():
+    # ... (保持原有逻辑不变)
     print(f"[{datetime.now()}] 🚀 开始 MongoDB 采集任务 (HK)...")
     
     # [新增] 清理所有以 8 开头的股票 (人民币结算)
@@ -426,6 +420,3 @@ def run_crawler_task():
         status.finish("采集完成")
     
     print(f"[{datetime.now()}] 🎉 采集任务结束")
-
-if __name__ == "__main__":
-    run_crawler_task()

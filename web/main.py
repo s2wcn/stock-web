@@ -24,8 +24,10 @@ from database import stock_collection, config_collection, template_collection
 import crawler_hk as crawler
 from crawler_state import status 
 
-# [新增] 引入分析服务
+# 引入分析服务
 from services.analysis_service import AnalysisService
+# [注意] 请确保 web/config.py 文件存在，否则请将 COLUMN_CONFIG 定义放回此处
+from config import COLUMN_CONFIG
 
 # 初始化调度器
 scheduler = BackgroundScheduler(timezone=str(get_localzone()))
@@ -201,57 +203,10 @@ app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
-# === 字段配置 (复用原有的) ===
-COLUMN_CONFIG = [
-    {"key": "所属行业", "label": "行业", "desc": "公司所属行业板块", "tip": "按东财/GICS分类标准划分", "no_sort": True, "no_chart": True},
-    {"key": "bull_label", "label": "长牛评级", "desc": "长牛分级筛选", "tip": "基于5年走势算法筛选。<br>需满足：<br>1. R²>0.8<br>2. 年化10%-60%<br>3. <b>日均成交 > 500万</b><br>4. <b>ROE > 0</b>", "no_chart": True},
-    {"key": "trend_analysis.r_squared", "label": "趋势R²", "desc": "对应周期的拟合度", "tip": "股价走势越接近直线，该值越接近1。<br><b>>0.8</b> 表示极度平稳。", "no_chart": True},
-    {"key": "trend_analysis.annual_return_pct", "label": "年化%", "desc": "对应周期的年化收益", "tip": "基于回归斜率推算的年化涨幅。", "suffix": "%", "no_chart": True},
-    {"key": "昨收", "label": "昨收", "desc": "最新收盘价", "tip": "最近一个交易日的收盘价格", "no_chart": False},
-    {"key": "昨涨跌幅", "label": "涨跌%", "desc": "日涨跌幅", "tip": "最近一个交易日的涨跌百分比", "suffix": "%"},
-    {"key": "昨成交量", "label": "成交量", "desc": "日成交量(股)", "tip": "最近一个交易日的成交股数", },
-    {"key": "昨换手率", "label": "换手%", "desc": "交易活跃度", "tip": "成交量 ÷ 流通股本", "suffix": "%"},
-    {"key": "近一周涨跌幅", "label": "周涨跌%", "desc": "短期动量", "tip": "当前价格相比5个交易日前的涨跌幅", "suffix": "%"},
-    {"key": "近一月涨跌幅", "label": "月涨跌%", "desc": "中期动量", "tip": "当前价格相比20个交易日前的涨跌幅", "suffix": "%"},
-    {"key": "市盈率", "label": "市盈率(PE)", "desc": "回本年限", "tip": "股价 ÷ 每股收益"},
-    {"key": "PEG", "label": "PEG", "desc": "成长估值比", "tip": "PE ÷ (净利增长率 × 100)"},
-    {"key": "PEGY", "label": "PEGY", "desc": "股息修正PEG", "tip": "PE ÷ (净利增长率 + 股息率)"},
-    {"key": "合理股价", "label": "合理股价", "desc": "格雷厄姆估值", "tip": "EPS × (8.5 + 2 × 盈利增长率)"},
-    {"key": "格雷厄姆数", "label": "格雷厄姆数", "desc": "价值上限", "tip": "√(22.5 × EPS × 每股净资产)"},
-    {"key": "净现比", "label": "净现比", "desc": "盈利含金量", "tip": "每股经营现金流 ÷ EPS"},
-    {"key": "市现率", "label": "市现率", "desc": "现金流估值", "tip": "股价 ÷ 每股经营现金流"},
-    {"key": "财务杠杆", "label": "财务杠杆", "desc": "权益乘数", "tip": "总资产 ÷ 股东权益"},
-    {"key": "总资产周转率", "label": "周转率", "desc": "营运能力", "tip": "营业收入 ÷ 总资产"},
-    {"key": "基本每股收益同比增长率", "label": "EPS同比%", "desc": "盈利增速", "tip": "衡量归属股东利润的增长速度", "suffix": "%"},
-    {"key": "营业收入同比增长率", "label": "营收同比%", "desc": "规模增速", "tip": "衡量业务规模的扩张速度", "suffix": "%"},
-    {"key": "营业利润率同比增长率", "label": "利润率同比%", "desc": "获利能力变动", "tip": "反映产品竞争力的变化趋势", "suffix": "%"},
-    {"key": "基本每股收益(元)", "label": "EPS(元)", "desc": "每股所获利润", "tip": ""},
-    {"key": "每股净资产(元)", "label": "BPS(元)", "desc": "每股归属权益", "tip": ""},
-    {"key": "每股经营现金流(元)", "label": "每股现金流", "desc": "每股进账现金", "tip": ""},
-    {"key": "市净率", "label": "市净率(PB)", "desc": "净资产溢价", "tip": "股价 ÷ 每股净资产"},
-    {"key": "股息率TTM(%)", "label": "股息率%", "desc": "分红回报率", "tip": "过去12个月分红总额 ÷ 市值", "suffix": "%"},
-    {"key": "每股股息TTM(港元)", "label": "每股股息", "desc": "每股分到的钱", "tip": ""},
-    {"key": "派息比率(%)", "label": "派息比%", "desc": "分红慷慨度", "tip": "总分红 ÷ 总净利润", "suffix": "%"},
-    {"key": "营业总收入", "label": "营收", "desc": "总生意额", "tip": ""},
-    {"key": "营业总收入滚动环比增长(%)", "label": "营收环比%", "desc": "营收短期趋势", "tip": "", "suffix": "%"},
-    {"key": "净利润", "label": "净利润", "desc": "最终落袋利润", "tip": ""},
-    {"key": "净利润滚动环比增长(%)", "label": "净利环比%", "desc": "净利短期趋势", "tip": "", "suffix": "%"},
-    {"key": "销售净利率(%)", "label": "净利率%", "desc": "产品暴利程度", "tip": "净利润 ÷ 营收", "suffix": "%"},
-    {"key": "股东权益回报率(%)", "label": "ROE%", "desc": "净资产收益率", "tip": "衡量管理层用股东的钱生钱的能力", "suffix": "%"},
-    {"key": "总资产回报率(%)", "label": "ROA%", "desc": "总资产收益率", "tip": "衡量所有资产(含负债)的综合利用效率", "suffix": "%"},
-    {"key": "总市值(港元)", "label": "总市值", "desc": "", "tip": ""},
-    {"key": "港股市值(港元)", "label": "港股市值", "desc": "", "tip": ""},
-    {"key": "法定股本(股)", "label": "法定股本", "desc": "", "tip": "", "no_sort": True, "no_chart": True},
-    {"key": "已发行股本(股)", "label": "发行股本", "desc": "", "tip": "", "no_sort": True, "no_chart": True},
-    {"key": "已发行股本-H股(股)", "label": "H股股本", "desc": "", "tip": "", "no_sort": True, "no_chart": True},
-    {"key": "每手股", "label": "每手股", "desc": "", "tip": "", "no_sort": True, "no_chart": True},
-]
-
 # === 路由区域 ===
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
-    # [修改] 不再加载所有数据，只传元数据
     # 获取最后更新时间
     last_time = status.last_finished_time
     if not last_time:
@@ -269,7 +224,7 @@ async def read_root(request: Request):
         "last_updated": last_time_str
     })
 
-# === [新增] 通用分页查询接口 ===
+# === [修改] 通用分页查询接口 (修复排序和筛选) ===
 @app.post("/api/stocks/query")
 async def query_stocks(
     page: int = Body(1), 
@@ -292,23 +247,34 @@ async def query_stocks(
     if filters:
         filter_conditions = []
         for key, range_val in filters.items():
-            # 获取数据库实际字段名
             db_key = key
-            # 特殊字段处理
-            if key in ["bull_label", "所属行业", "is_ggt"]:
-                continue # 暂时不处理这类非数值范围筛选
+            
+            # [修正] 字段映射逻辑
+            if key == "code":
+                db_key = "_id"
             elif key.startswith("trend_analysis."):
-                db_key = key # 保持原样 (如 trend_analysis.r_squared)
-            elif key in ["昨收", "昨涨跌幅", "昨成交量", "昨换手率", "近一周涨跌幅", "近一月涨跌幅"]:
-                db_key = f"latest_data.{key}" # 在 latest_data 下但不需要前缀
-            else:
-                # 默认都在 latest_data 下
+                db_key = key # 保持原样
+            elif key == "bull_label":
+                db_key = "bull_label" # 在根目录
+            elif key == "所属行业":
+                db_key = "latest_data.所属行业"
+            elif key not in ["_id", "name", "bull_label"]:
+                # 其他默认都在 latest_data 下
                 db_key = f"latest_data.{key}"
 
             min_v = range_val.get("min")
             max_v = range_val.get("max")
             
             range_query = {}
+            
+            # [修正] 针对文本字段的模糊匹配 (行业、长牛评级)
+            if key in ["所属行业", "bull_label"]:
+                if min_v: # 前端通过 min 字段传文本
+                    range_query = {"$regex": str(min_v), "$options": "i"}
+                    filter_conditions.append({db_key: range_query})
+                continue # 文本字段处理完直接跳过，不走数值逻辑
+
+            # 数值范围逻辑
             if min_v is not None and min_v != "":
                 range_query["$gte"] = float(min_v)
             if max_v is not None and max_v != "":
@@ -331,7 +297,11 @@ async def query_stocks(
     sort_stage = [("_id", 1)]
     if sort_key:
         db_sort_key = sort_key
-        if sort_key not in ["_id", "name", "bull_label"] and not sort_key.startswith("trend_analysis"):
+        
+        # [修正] 排序字段映射：code -> _id
+        if sort_key == "code":
+            db_sort_key = "_id"
+        elif sort_key not in ["_id", "name", "bull_label"] and not sort_key.startswith("trend_analysis"):
              db_sort_key = f"latest_data.{sort_key}"
              
         direction = 1 if sort_dir == "asc" else -1
@@ -356,7 +326,6 @@ async def query_stocks(
             "bull_label": doc.get("bull_label", ""),
             **latest # 展开 latest_data
         }
-        # 展开 trend_analysis 并加上前缀，以便前端 key 匹配
         for k, v in trend.items():
             item[f"trend_analysis.{k}"] = v
             
