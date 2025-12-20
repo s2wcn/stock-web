@@ -254,6 +254,8 @@ async def query_stocks(
                 db_key = "_id"
             elif key.startswith("trend_analysis."):
                 db_key = key # 保持原样
+            elif key.startswith("ma_strategy."): # [新增] 策略字段直接透传
+                db_key = key
             elif key == "bull_label":
                 db_key = "bull_label" # 在根目录
             elif key == "所属行业":
@@ -301,7 +303,7 @@ async def query_stocks(
         # [修正] 排序字段映射：code -> _id
         if sort_key == "code":
             db_sort_key = "_id"
-        elif sort_key not in ["_id", "name", "bull_label"] and not sort_key.startswith("trend_analysis"):
+        elif sort_key not in ["_id", "name", "bull_label"] and not sort_key.startswith("trend_analysis") and not sort_key.startswith("ma_strategy"):
              db_sort_key = f"latest_data.{sort_key}"
              
         direction = 1 if sort_dir == "asc" else -1
@@ -315,6 +317,7 @@ async def query_stocks(
     for doc in cursor:
         latest = doc.get('latest_data', {})
         trend = doc.get("trend_analysis", {})
+        ma_strat = doc.get("ma_strategy", {}) # [新增] 获取策略数据
         
         # 扁平化处理
         item = {
@@ -328,6 +331,19 @@ async def query_stocks(
         }
         for k, v in trend.items():
             item[f"trend_analysis.{k}"] = v
+
+        # [新增] 扁平化处理策略数据 (ma_strategy)
+        if ma_strat:
+            item["ma_strategy.total_return"] = ma_strat.get("total_return")
+            item["ma_strategy.benchmark_return"] = ma_strat.get("benchmark_return")
+            
+            params = ma_strat.get("params", {})
+            item["ma_strategy.buy_bias"] = params.get("buy_ma20_bias")
+            item["ma_strategy.sell_bias"] = params.get("sell_ma5_bias")
+            
+            metrics = ma_strat.get("metrics", {})
+            item["ma_strategy.win_rate"] = metrics.get("win_rate")
+            item["ma_strategy.trades"] = metrics.get("trades")
             
         data.append(item)
 

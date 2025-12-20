@@ -24,13 +24,13 @@ COMMISSION = 0.002
 MAX_WORKERS = min(os.cpu_count(), 4) 
 TASK_TIMEOUT = 600  
 
-def get_bull_period_days(bull_label):
+def get_bull_years(bull_label):
     if not bull_label: return 0
-    if "5年" in bull_label: return 250 * 5
-    if "4年" in bull_label: return 250 * 4
-    if "3年" in bull_label: return 250 * 3
-    if "2年" in bull_label: return 250 * 2
-    if "1年" in bull_label: return 250 * 1
+    if "5年" in bull_label: return 5
+    if "4年" in bull_label: return 4
+    if "3年" in bull_label: return 3
+    if "2年" in bull_label: return 2
+    if "1年" in bull_label: return 1
     return 0
 
 # === Numba 极速回测逻辑 ===
@@ -59,7 +59,6 @@ def backtest_numba(close_arr, bias5_arr, bias20_arr, buy_bias_threshold, sell_bi
         b20 = bias20_arr[i]
         
         if in_market:
-            # [保护] cost_price 理论上不为0，因为买入时必须有价格，但加层保险
             if cost_price <= 0.0001:
                 in_market = False
                 hold_shares = 0.0
@@ -90,52 +89,29 @@ def backtest_numba(close_arr, bias5_arr, bias20_arr, buy_bias_threshold, sell_bi
     return_pct = (final_value - 10000.0) / 10000.0 * 100
     return return_pct, trade_count, win_count
 
-# === 数据同步与获取逻辑 ===
+# === 数据同步逻辑 ===
 def sync_qfq_history(code, name, db_collection):
     """
-    检查数据库，增量更新 QFQ 历史数据，并返回完整的 DataFrame
+    [强制刷新] 获取最新的 QFQ 历史数据并覆盖数据库。
     """
-    doc = db_collection.find_one({"_id": code}, {"qfq_history": 1})
-    existing_data = doc.get("qfq_history", []) if doc else []
-    
-    start_date = "19700101"
-    
-    # 2. 检查数据是否新鲜
-    if existing_data:
-        last_record = existing_data[-1]
-        last_date_str = last_record.get("date") 
-        
-        try:
-            last_dt = datetime.strptime(last_date_str, "%Y-%m-%d")
-            yesterday = datetime.now() - timedelta(days=1)
-            # 如果最后一条数据是昨天或今天，跳过
-            if last_dt.date() >= yesterday.date():
-                return pd.DataFrame(existing_data)
-            
-            # 否则增量更新
-            next_day = last_dt + timedelta(days=1)
-            start_date = next_day.strftime("%Y%m%d")
-            
-        except Exception:
-            start_date = "19700101"
-            existing_data = []
-
-    # 3. 调用 AkShare 增量抓取
     try:
-        time.sleep(random.uniform(0.5, 1.5))
+        # 随机休眠防封
+        time.sleep(random.uniform(0.5, 1.2))
         
+        # 拉取全量数据
         df_new = ak.stock_hk_hist(
             symbol=code, 
             period="daily", 
-            start_date=start_date, 
+            start_date="20180101", 
             end_date="22220101", 
             adjust="qfq"
         )
         
         if df_new is None or df_new.empty:
+            doc = db_collection.find_one({"_id": code}, {"qfq_history": 1})
+            existing_data = doc.get("qfq_history", []) if doc else []
             return pd.DataFrame(existing_data) if existing_data else None
 
-        # 4. 数据清洗
         rename_map = {
             "日期": "date", "收盘": "close", "开盘": "open", 
             "最高": "high", "最低": "low", "成交量": "volume"
@@ -143,40 +119,32 @@ def sync_qfq_history(code, name, db_collection):
         df_new.rename(columns=rename_map, inplace=True)
         
         if "close" not in df_new.columns:
-            return pd.DataFrame(existing_data) if existing_data else None
+            return None
             
         df_new['date'] = pd.to_datetime(df_new['date']).dt.strftime("%Y-%m-%d")
         
-        # [新增] 强制类型转换，防止字符串导致的错误
         for col in ["close", "open", "high", "low", "volume"]:
             if col in df_new.columns:
                 df_new[col] = pd.to_numeric(df_new[col], errors='coerce')
         
         new_records = df_new.to_dict('records')
         
-        # 5. 保存回数据库
-        if not existing_data:
-            db_collection.update_one(
-                {"_id": code}, 
-                {"$set": {"qfq_history": new_records}}
-            )
-            return df_new
-        else:
-            db_collection.update_one(
-                {"_id": code}, 
-                {"$push": {"qfq_history": {"$each": new_records}}}
-            )
-            return pd.DataFrame(existing_data + new_records)
+        # 强制覆盖
+        db_collection.update_one(
+            {"_id": code}, 
+            {"$set": {"qfq_history": new_records}}
+        )
+        
+        return df_new
 
     except Exception as e:
-        print(f"❌ [{code}] 同步数据失败: {e}")
+        print(f"❌ [{code}] 数据同步失败: {e}")
+        doc = db_collection.find_one({"_id": code}, {"qfq_history": 1})
+        existing_data = doc.get("qfq_history", []) if doc else []
         return pd.DataFrame(existing_data) if existing_data else None
 
 # === 子进程执行函数 ===
-def optimize_single_stock_process(code, name, days):
-    """
-    [独立进程函数] 
-    """
+def optimize_single_stock_process(code, name, years):
     local_client = None
     try:
         local_client = MongoClient(MONGO_URI)
@@ -185,47 +153,73 @@ def optimize_single_stock_process(code, name, days):
 
         df = sync_qfq_history(code, name, local_collection)
         
-        if df is None or len(df) < 60: 
-            return None
-            
-        # [新增] 核心修复：强力清洗脏数据 (收盘价 <= 0 的行)
-        if 'close' in df.columns:
-            df['close'] = pd.to_numeric(df['close'], errors='coerce')
-            df = df[df['close'] > 0.0001] # 剔除 0 或负数价格
+        if df is None or len(df) < 60: return None
+        if 'close' not in df.columns: return None
+
+        # 清洗脏数据
+        df['close'] = pd.to_numeric(df['close'], errors='coerce')
+        df = df[df['close'] > 0.0001].copy()
         
-        if len(df) < 60:
-            return None
-        
-        # 3. 截取分析周期
-        df = df.iloc[-days:].copy().reset_index(drop=True)
-        
-        # 4. 预计算
+        # 1. 确保日期格式
+        df['date'] = pd.to_datetime(df['date'])
+        if df.empty: return None
+
+        # === [核心修复 1] 先计算指标，再切片 ===
+        # 这样可以保证切片后的第一天也有 MA 值，不会因为 dropna 丢失数据
         close_series = df['close'].astype(float)
         df['ma5'] = close_series.rolling(window=5).mean()
         df['ma20'] = close_series.rolling(window=20).mean()
         
-        # 使用 numpy 的错误处理上下文，防止除以 0 报错 (变成 inf/nan)
         with np.errstate(divide='ignore', invalid='ignore'):
             df['bias_5'] = (close_series - df['ma5']) / df['ma5']
             df['bias_20'] = (close_series - df['ma20']) / df['ma20']
         
-        df.dropna(subset=['ma20', 'bias_5', 'bias_20'], inplace=True)
-        df.reset_index(drop=True, inplace=True)
+        # === [核心修复 2] 定位切片点和基准价格 ===
+        latest_date = df['date'].iloc[-1]
+        try:
+            target_start_date = latest_date - pd.DateOffset(years=years)
+        except:
+            target_start_date = latest_date - timedelta(days=365 * years)
         
-        if len(df) == 0: return None
+        # 找到大于等于目标日期的所有行的索引
+        mask = df['date'] >= target_start_date
+        if not mask.any(): return None
+        
+        # 获取符合条件的第一行数据的索引
+        start_idx = mask.idxmax()
+        
+        # 计算基准回报的成本价 (Benchmark Cost)
+        # 逻辑：如果要计算“区间涨幅”，基准应该是区间开始前一天的收盘价
+        if start_idx > 0:
+            benchmark_cost = df.iloc[start_idx - 1]['close']
+        else:
+            # 如果恰好是第一天上市，只能用当天的开盘价或收盘价
+            benchmark_cost = df.iloc[start_idx]['open'] # 或者 'close'
 
-        # 5. 准备 Numba 数据
-        close_arr = df['close'].astype(float).values
-        bias5_arr = df['bias_5'].astype(float).values
-        bias20_arr = df['bias_20'].astype(float).values
+        # 切片用于策略回测 (Strategy Slice)
+        # 注意：这里我们保留切片后的数据用于跑策略，因为策略是从这一天开始看信号的
+        df_slice = df.iloc[start_idx:].copy().reset_index(drop=True)
+        
+        # 再次清洗切片后的无效MA (虽然前面算了，但如果切片太早可能还是NaN，保险起见)
+        df_slice.dropna(subset=['ma20', 'bias_5', 'bias_20'], inplace=True)
+        df_slice.reset_index(drop=True, inplace=True)
+        
+        if len(df_slice) == 0: return None
 
-        # [修复] 基准回报率计算保护
-        start_price = close_arr[0]
-        if start_price <= 0.0001:
+        # === 准备数据 ===
+        close_arr = df_slice['close'].astype(float).values
+        bias5_arr = df_slice['bias_5'].astype(float).values
+        bias20_arr = df_slice['bias_20'].astype(float).values
+
+        # === [核心修复 3] 计算准确的基准回报 ===
+        end_price = close_arr[-1]
+        
+        if benchmark_cost <= 0.0001:
             benchmark_return = 0.0
         else:
-            end_price = close_arr[-1]
-            benchmark_return = (end_price - start_price) / start_price * 100
+            # 公式：(现价 - 基准成本) / 基准成本
+            # 基准成本 = 区间起始日的前一日收盘价
+            benchmark_return = (end_price - benchmark_cost) / benchmark_cost * 100
 
         best_result = {
             "total_return": -999,
@@ -277,13 +271,8 @@ def check_network():
     return False
 
 def clean_non_bull_data():
-    """
-    清理非长牛股的历史数据 (使用主进程连接)
-    """
     print("🧹 正在清理非长牛股的 QFQ 历史数据...")
     try:
-        # 这里需要临时建立连接，或者复用 global_collection 
-        # 因为在 main 之前运行，确保有连接
         temp_client = MongoClient(MONGO_URI)
         temp_db = temp_client[DB_NAME]
         temp_col = temp_db["stocks"]
@@ -298,7 +287,7 @@ def clean_non_bull_data():
         print(f"❌ 清理失败: {e}")
 
 async def main():
-    print("🚀 开始执行【均线乖离率策略】优化 (V5: 数据清洗版)...")
+    print("🚀 开始执行【均线乖离率策略】优化 (V5.3: 基准收益修正版)...")
     
     if not check_network():
         return
@@ -307,7 +296,6 @@ async def main():
 
     print(f"⚙️  CPU核心数: {os.cpu_count()} | 启用进程数: {MAX_WORKERS} | 超时: {TASK_TIMEOUT}s")
     
-    # 获取任务列表 (建立临时连接)
     client = MongoClient(MONGO_URI)
     db = client[DB_NAME]
     global_collection = db["stocks"]
@@ -328,10 +316,10 @@ async def main():
             async with sem:
                 code = doc["_id"]
                 name = doc["name"]
-                days = get_bull_period_days(doc["bull_label"])
-                if days == 0: return None
+                years = get_bull_years(doc["bull_label"])
+                if years == 0: return None
                 
-                future = loop.run_in_executor(pool, optimize_single_stock_process, code, name, days)
+                future = loop.run_in_executor(pool, optimize_single_stock_process, code, name, years)
                 
                 try:
                     result = await asyncio.wait_for(future, timeout=TASK_TIMEOUT)

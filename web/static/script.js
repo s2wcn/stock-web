@@ -204,6 +204,19 @@ function renderRows(batch) {
                     badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">优</span>`;
                 }
 
+                // === [新增] 策略数据的视觉增强 ===
+                else if (col.key === 'ma_strategy.total_return') {
+                    if (num >= 50) {
+                        badge = `<span class="badge bg-danger ms-1" style="font-size:10px; padding:2px 4px;">🔥超强</span>`;
+                    } else if (num >= 20) {
+                        badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">优秀</span>`;
+                    }
+                }
+                else if (col.key === 'ma_strategy.win_rate' && num >= 80) {
+                     badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">稳</span>`;
+                }
+                // ================================
+
                 if (badge) displayVal += badge;
             }
             
