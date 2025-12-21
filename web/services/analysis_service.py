@@ -17,7 +17,7 @@ class AnalysisService:
         """
         print("🚀 Service: 开始执行【5年长牛分级筛选】...")
         
-        # 获取待分析股票列表（仅需 ID 和 Name 以及 ROE 检查用的 latest_data）
+        # 获取待分析股票列表（仅需 ID 和 Name 以及 ROE/市值 检查用的 latest_data）
         cursor = self.collection.find({}, {"_id": 1, "name": 1, "latest_data": 1})
         all_stocks = list(cursor)
         total = len(all_stocks)
@@ -31,6 +31,9 @@ class AnalysisService:
         MIN_ANNUAL_RETURN = 10.0   
         MAX_ANNUAL_RETURN = 60.0   
         MIN_TURNOVER = 5_000_000   # 日均成交额门槛
+        
+        # [新增] 市值门槛 100亿
+        MIN_MARKET_CAP = 10_000_000_000 
 
         for i, doc in enumerate(all_stocks):
             if self.status and self.status.should_stop:
@@ -44,8 +47,16 @@ class AnalysisService:
             if code.startswith("8"):
                 continue
 
-            # 基本面支撑: ROE > 0
             latest = doc.get("latest_data", {})
+            
+            # === 1. 市值筛选：必须超过 100 亿 ===
+            market_cap = latest.get("总市值(港元)")
+            # 这里的 market_cap 已经在 crawler 阶段清洗为 float，如果为空或小于门槛，则跳过
+            if market_cap is None or (isinstance(market_cap, (int, float)) and market_cap < MIN_MARKET_CAP):
+                self.collection.update_one({"_id": code}, {"$unset": {"bull_label": "", "trend_analysis": ""}})
+                continue
+
+            # === 2. 基本面支撑: ROE > 0 ===
             roe = latest.get("股东权益回报率(%)")
             
             # 如果 ROE 不达标，直接清除评级并跳过
@@ -89,12 +100,34 @@ class AnalysisService:
             else:
                 df['amount_est'] = 0
 
+            # === [核心更新] 计算 MA50 和 MA200 ===
+            # MA50 用于死叉判断，MA200 用于长期趋势支撑
+            df['ma50'] = df['close'].rolling(window=50).mean()
+            df['ma200'] = df['close'].rolling(window=200).mean()
+
+            # === [策略1：趋势熔断检查] ===
+            # 条件：MA50 < MA200 (死叉) 且 MA200 拐头向下 (今日比20日前低)
+            # 这是一个“一票否决”的硬性条件，意味着趋势已坏
+            if len(df) > 220:
+                curr = df.iloc[-1]
+                prev_20 = df.iloc[-20] # 取20个交易日前的状态来确认拐头
+                
+                # 确保数据非空
+                if pd.notna(curr['ma50']) and pd.notna(curr['ma200']) and pd.notna(prev_20['ma200']):
+                    is_dead_cross = curr['ma50'] < curr['ma200']
+                    is_ma200_falling = curr['ma200'] < prev_20['ma200'] # 简单判断拐头向下
+                    
+                    if is_dead_cross and is_ma200_falling:
+                        # 熔断触发：清除之前的评级（如果有），并直接返回
+                        self.collection.update_one({"_id": code}, {"$unset": {"bull_label": "", "trend_analysis": ""}})
+                        return
+
             latest_date = df['date'].iloc[-1]
 
             # 倒序循环：5年 -> 1年
+            # 这里的循环逻辑天然支持“从收复之日起重新计算”：
+            # 如果5年内有中断，5年的检查会失败；循环继续到3年，如果3年内无中断（即收复后），则评级为3年长牛。
             for year in [5, 4, 3, 2, 1]:
-                # === [修改] 使用日历时间计算起始点 ===
-                # 逻辑参考 analyze_ma_bias.py
                 try:
                     target_start_date = latest_date - pd.DateOffset(years=year)
                 except:
@@ -106,10 +139,8 @@ class AnalysisService:
                 
                 df_subset = df[mask].copy()
                 
-                # === [新增] 数据覆盖度校验 ===
-                # 如果切片后的第一天日期比目标日期晚了超过 30 天，说明该股票上市不足该年份，或开头缺失严重
+                # === 数据覆盖度校验 ===
                 if df_subset.empty: continue
-                
                 actual_start_date = df_subset['date'].iloc[0]
                 if (actual_start_date - target_start_date).days > 30:
                     continue
@@ -118,8 +149,12 @@ class AnalysisService:
                 avg_turnover = df_subset['amount_est'].mean()
                 if avg_turnover < min_turnover: continue 
 
+                # === [策略2：趋势连续性检查 (MA200)] ===
+                # 如果区间内出现连续 5 个交易日低于 MA200，视为趋势中断（本周期不成立）
+                if self._check_ma200_interruption(df_subset):
+                    continue
+
                 y_data = df_subset['close'].astype(float).values
-                # 确保有足够的数据点进行回归
                 if len(y_data) < 20: continue 
                 if np.any(y_data <= 0): continue
                     
@@ -153,3 +188,33 @@ class AnalysisService:
             update_op["$unset"] = {"bull_label": "", "trend_analysis": ""}
 
         self.collection.update_one({"_id": code}, update_op)
+
+    def _check_ma200_interruption(self, df_subset):
+        """
+        检查是否存在连续 5 个交易日低于 MA200 的情况。
+        返回 True 表示中断（本周期不成立），False 表示通过。
+        """
+        # 移除 MA200 为空的行
+        valid_ma = df_subset.dropna(subset=['ma200'])
+        
+        if valid_ma.empty:
+            # 如果整个周期都没有 MA200（例如上市不满200天），视为数据不足，不进行长牛评级
+            # 稳健起见，返回 True (视为中断/不满足条件)
+            return True
+
+        # 找出低于 MA200 的日子
+        is_below = valid_ma['close'] < valid_ma['ma200']
+        
+        # 计算连续 True 的次数
+        # 技巧：通过比较当前行与上一行是否不等，生成分组ID，然后按组合计
+        groups = is_below.ne(is_below.shift()).cumsum()
+        
+        # 统计每个分组中 True 的数量
+        consecutive_counts = is_below.groupby(groups).sum()
+        max_consecutive = consecutive_counts.max()
+        
+        # 如果最大连续低于天数 >= 5，则视为趋势中断
+        if max_consecutive >= 5:
+            return True
+            
+        return False

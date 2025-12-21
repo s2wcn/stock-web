@@ -158,7 +158,8 @@ def optimize_single_stock_process(code, name, years):
 
         # 清洗脏数据
         df['close'] = pd.to_numeric(df['close'], errors='coerce')
-        df = df[df['close'] > 0.0001].copy()
+        # [修复] 过滤后必须重置索引，否则后续 iloc 会越界
+        df = df[df['close'] > 0.0001].copy().reset_index(drop=True)
         
         # 1. 确保日期格式
         df['date'] = pd.to_datetime(df['date'])
@@ -186,6 +187,7 @@ def optimize_single_stock_process(code, name, years):
         if not mask.any(): return None
         
         # 获取符合条件的第一行数据的索引
+        # [注] 因为前面 reset_index 了，所以这里的 idxmax (Label) 等于 iloc 的位置
         start_idx = mask.idxmax()
         
         # 计算基准回报的成本价 (Benchmark Cost)
