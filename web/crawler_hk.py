@@ -465,6 +465,12 @@ def run_crawler_task():
                 status.finish(status.message if status.message.startswith("❌") else "任务已由用户终止")
                 return
 
+            # === [新增] 过滤纳斯达克试验计划 (04330-04339) ===
+            # 这些是美股在港股的影子代码，无财报数据，会导致 akshare 报错
+            if code.startswith("043") and 4330 <= int(code) <= 4339:
+                status.update(i + 1, message=f"跳过(试验计划): {name}")
+                continue
+
             status.update(i + 1, message=f"正在处理: {name}")
             
             if ggt_codes is None:

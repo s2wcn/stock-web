@@ -16,8 +16,8 @@ from database import MONGO_URI, DB_NAME
 
 # === 1. 参数配置区域 ===
 
-BUY_RANGE = np.arange(-0.10, 0.021, 0.005)
-SELL_RANGE = np.arange(0.00, 0.151, 0.005)
+BUY_RANGE = np.arange(-0.10, 0.021, 0.002)
+SELL_RANGE = np.arange(0.00, 0.151, 0.002)
 HARD_STOP_LOSS = -0.15 
 COMMISSION = 0.002 
 
