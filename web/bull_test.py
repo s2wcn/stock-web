@@ -1,3 +1,4 @@
+# 文件路径: web/bull_test.py
 import akshare as ak
 import pandas as pd
 import numpy as np
@@ -11,45 +12,112 @@ warnings.filterwarnings('ignore')
 # === 配置参数 ===
 MIN_R_SQUARED = 0.80       
 MIN_ANNUAL_RETURN = 10.0   
-MAX_ANNUAL_RETURN = 60.0   
+MAX_ANNUAL_RETURN = 200.0   
 MIN_TURNOVER = 5_000_000   
+
+# === 工具函数：计算 KAMA ===
+def calculate_kama(series, period=10, fast_end=2, slow_end=30):
+    change = series.diff(period).abs()
+    volatility = series.diff().abs().rolling(window=period).sum()
+    er = change / volatility.replace(0, 0.0000001)
+    fast_sc = 2 / (fast_end + 1)
+    slow_sc = 2 / (slow_end + 1)
+    sc = (er * (fast_sc - slow_sc) + slow_sc) ** 2
+    
+    kama_values = np.zeros_like(series.values)
+    kama_values[:] = np.nan
+    
+    if len(series) > period:
+        kama_values[period-1] = series.iloc[period-1]
+        values = series.values
+        sc_values = sc.values
+        current_kama = kama_values[period-1]
+        for i in range(period, len(series)):
+            if np.isnan(sc_values[i]):
+                current_kama = values[i] 
+            else:
+                current_kama = current_kama + sc_values[i] * (values[i] - current_kama)
+            kama_values[i] = current_kama
+    return pd.Series(kama_values, index=series.index)
 
 def check_ma250_interruption(df_subset):
     """
     检查是否存在连续 5 个交易日低于 MA250 (年线) 的情况。
-    并定位最长一次破位的起始日期。
+    返回: (是否破位, 描述文本)
     """
     valid_ma = df_subset.dropna(subset=['ma250'])
     if valid_ma.empty:
-        return True, "区间内无有效的 MA250 数据 (上市时间太短)"
+        return True, "无有效年线数据"
 
     is_below = valid_ma['close'] < valid_ma['ma250']
     
-    # 1. 对连续区域进行分组
+    # 1. 识别连续区间
     groups = is_below.ne(is_below.shift()).cumsum()
-    
-    # 2. 计算每组的长度
     consecutive_counts = is_below.groupby(groups).sum()
     max_consecutive = consecutive_counts.max()
     
     if max_consecutive >= 5:
-        # 3. 找到那个最大的组的 ID
+        # 2. 找到最长那一次破位的 Group ID
         worst_group_id = consecutive_counts.idxmax()
+        # 3. 反查该组的数据，获取第一天
+        worst_rows = valid_ma[groups == worst_group_id]
+        start_date = worst_rows['date'].iloc[0].strftime("%Y-%m-%d")
         
-        # 4. 根据 ID 反查原始数据的日期
-        worst_period_rows = valid_ma[groups == worst_group_id]
+        return True, f"从 {start_date} 开始，曾连续 {max_consecutive} 天低于年线"
         
-        if not worst_period_rows.empty:
-            start_date = worst_period_rows['date'].iloc[0].strftime('%Y-%m-%d')
-            return True, f"股价从 {start_date} 开始曾连续 {max_consecutive} 个交易日低于 MA250 (趋势中断)"
+    return False, "趋势完好 (始终在年线之上)"
+
+def check_kama_status_in_period(df_subset):
+    """
+    全周期扫描 KAMA 状态 (含2天确认机制)
+    返回: (是否通过, 简短状态, 详情日期, 累计破位天数)
+    """
+    if df_subset.empty: return False, "无数据", None, 0
+    
+    k_fast = df_subset['kama_fast']
+    k_slow = df_subset['kama_slow']
+    dates = df_subset['date']
+    
+    mask_valid = pd.notna(k_fast) & pd.notna(k_slow)
+    if not mask_valid.any():
+        return False, "KAMA 数据不足", None, 0
         
-        return True, f"股价曾连续 {max_consecutive} 个交易日低于 MA250 (趋势中断)"
-        
-    return False, "趋势保持良好 (在年线之上运行)"
+    kf_valid = k_fast[mask_valid]
+    ks_valid = k_slow[mask_valid]
+    dates_valid = dates[mask_valid]
+    
+    # 1. 原始死叉
+    raw_dead_mask = kf_valid < ks_valid
+    
+    # 2. 确认死叉 (连续2天)
+    prev_dead_mask = raw_dead_mask.shift(1).fillna(False)
+    confirmed_dead_mask = raw_dead_mask & prev_dead_mask
+
+    # === 统计累计破位天数 ===
+    total_broken_days = confirmed_dead_mask.sum()
+
+    # === 情况 A: 全程无确认死叉 ===
+    if total_broken_days == 0:
+        if raw_dead_mask.any():
+            return True, "趋势良好 (仅有短暂假摔)", None, 0
+        return True, "全程多头排列 (超稳)", None, 0
+
+    # === 情况 B: 存在确认死叉 (检测失败) ===
+    # 寻找最后一次破位结束或当前的日期，用于提示
+    # 这里我们找“最近一次处于确认死叉”的日期
+    last_idx = np.where(confirmed_dead_mask)[0][-1]
+    last_date = dates_valid.iloc[last_idx].strftime("%Y-%m-%d")
+    
+    is_current_broken = confirmed_dead_mask.iloc[-1]
+    
+    if is_current_broken:
+        return False, "当前处于死叉中", last_date, total_broken_days
+    else:
+        return False, "周期内曾发生破位", last_date, total_broken_days
 
 def analyze_stock_levels(code, check_date_str):
     print(f"\n{'='*70}")
-    print(f"🕵️‍♂️ 长牛评级逐级诊断 (MA250 年线版): {code} @ {check_date_str}")
+    print(f"🕵️‍♂️ 长牛评级深度体检 (详情增强版): {code} @ {check_date_str}")
     print(f"{'='*70}")
 
     # === 1. 获取数据 ===
@@ -60,135 +128,136 @@ def analyze_stock_levels(code, check_date_str):
         print(f"❌ 获取数据失败: {e}")
         return
 
-    if df is None or df.empty:
-        print("❌ 数据为空")
+    if df is None or df.empty or 'date' not in df.columns:
+        print("❌ 数据为空或格式错误")
         return
-
-    if 'date' in df.columns:
-        df['date'] = pd.to_datetime(df['date'])
-    else:
-        print("❌ 数据缺少 date 列")
-        return
-
-    # === 2. 截取数据 ===
+    
+    df['date'] = pd.to_datetime(df['date'])
     check_date = pd.to_datetime(check_date_str)
     df = df[df['date'] <= check_date].copy()
     
     if df.empty:
-        print(f"❌ 在 {check_date_str} 之前没有数据")
+        print(f"❌ 无历史数据")
         return
 
     latest_record = df.iloc[-1]
-    print(f"📅 分析基准日: {latest_record['date'].strftime('%Y-%m-%d')} | 收盘价: {latest_record['close']}")
-
-    # === 3. 预计算全局指标 (MA50, MA250) ===
-    df['ma50'] = df['close'].rolling(window=50).mean()
-    # [修改] 使用 250 日均线
-    df['ma250'] = df['close'].rolling(window=250).mean()
     
-    if 'close' in df.columns and 'volume' in df.columns:
+    # === 2. 预计算全局指标 ===
+    df['ma50'] = df['close'].rolling(window=50).mean()
+    df['ma250'] = df['close'].rolling(window=250).mean()
+    df['kama_fast'] = calculate_kama(df['close'], 10, 2, 30)
+    df['kama_slow'] = calculate_kama(df['close'], 30, 5, 50)
+    
+    if 'volume' in df.columns:
         df['amount_est'] = df['close'].astype(float) * df['volume'].astype(float)
     else:
         df['amount_est'] = 0
 
-    # === 4. 第一关: 趋势熔断检查 (一票否决) ===
-    print(f"\n{'='*20} 🛑 熔断检查 🛑 {'='*20}")
-    # [修改] 需要至少 270 天 (250天MA + 20天比较)
-    if len(df) > 270:
-        curr = df.iloc[-1]
-        prev_20 = df.iloc[-20]
-        
-        # [修改] 比较 MA250
-        is_dead_cross = curr['ma50'] < curr['ma250']
-        is_ma_falling = curr['ma250'] < prev_20['ma250'] 
-        
-        if is_dead_cross and is_ma_falling:
-            print(f"❌ [熔断触发] 当前呈空头排列 (MA50 < MA250) 且年线趋势向下。")
-            print(f"   MA50: {curr['ma50']:.3f}, MA250: {curr['ma250']:.3f}")
-            print("🚫 结论: 趋势已坏，直接评定为【不符合】，终止脚本。")
-            return
-        else:
-            print("✅ [熔断未触发] 均线形态尚可，继续分析...")
-    else:
-        print("⚠️ 数据不足 270 天，跳过熔断检查。")
-
-    # === 5. 循环降级检查 (5年 -> 1年) ===
-    print(f"\n{'='*20} 📉 开始逐级回测 📉 {'='*20}")
+    # === 3. 逐级全指标遍历 ===
+    print(f"\n{'='*20} 📉 开始长牛全指标扫描 📉 {'='*20}")
     
     for year in [5, 4, 3, 2, 1]:
-        print(f"\n🔍 正在尝试匹配 [长牛 {year} 年] 标准...")
+        print(f"\n🔍 [检测长牛 {year} 年标准] ------------------------")
         
-        target_start_date = latest_record['date'] - pd.DateOffset(years=year)
-        
-        mask = df['date'] >= target_start_date
+        # 3.1 数据切片
+        try:
+            target_start = latest_record['date'] - pd.DateOffset(years=year)
+        except:
+            target_start = latest_record['date'] - timedelta(days=365*year)
+            
+        mask = df['date'] >= target_start
         df_subset = df[mask].copy()
+
+        # 核心逻辑变量
+        this_year_passed = True
         
-        fail_reason = None
-
+        # --- 检查 1: 数据完整性 ---
         if df_subset.empty:
-            fail_reason = "区间内无数据"
-        else:
-            actual_start_date = df_subset['date'].iloc[0]
-            days_diff = (actual_start_date - target_start_date).days
-            if days_diff > 30:
-                fail_reason = f"数据缺失 (缺失开头 {days_diff} 天)"
-            else:
-                avg_turnover = df_subset['amount_est'].mean()
-                if avg_turnover < MIN_TURNOVER:
-                    fail_reason = f"流动性不足 (日均 {avg_turnover/10000:.1f}万 < {MIN_TURNOVER/10000:.0f}万)"
-                else:
-                    # [修改] 检查 MA250 连续破位
-                    is_interrupted, msg = check_ma250_interruption(df_subset)
-                    if is_interrupted:
-                        fail_reason = msg
-                    else:
-                        # 线性回归 (日历年模式)
-                        y_data = df_subset['close'].astype(float).values
-                        
-                        if len(y_data) < 20:
-                            fail_reason = "有效交易日太少"
-                        else:
-                            start_ts = df_subset['date'].iloc[0]
-                            x_data = (df_subset['date'] - start_ts).dt.days.values / 365.25
-                            
-                            log_y_data = np.log(y_data)
-                            
-                            slope, intercept, r_value, p_value, std_err = stats.linregress(x_data, log_y_data)
-                            r_squared = r_value ** 2
-                            annualized_return = (np.exp(slope) - 1) * 100
-                            
-                            print(f"   📊 数据: R²={r_squared:.4f} | 年化={annualized_return:.1f}% | 斜率={slope:.5f}")
-
-                            if r_squared < MIN_R_SQUARED:
-                                fail_reason = f"拟合度 R² 低于 0.8 ({r_squared:.4f})"
-                            elif slope <= 0:
-                                fail_reason = "趋势向下 (斜率为负)"
-                            elif not (MIN_ANNUAL_RETURN <= annualized_return <= MAX_ANNUAL_RETURN):
-                                if annualized_return < MIN_ANNUAL_RETURN:
-                                    fail_reason = f"涨幅太慢 (年化 {annualized_return:.1f}% < {MIN_ANNUAL_RETURN}%)"
-                                else:
-                                    fail_reason = f"涨幅过快/妖股 (年化 {annualized_return:.1f}% > {MAX_ANNUAL_RETURN}%)"
-
-        if fail_reason:
-            print(f"   ❌ 失败: {fail_reason}")
-            print(f"   👉 降级，继续尝试 [长牛 {year-1} 年]...")
+            print(f"   ❌ 数据: 无数据")
+            this_year_passed = False
             continue 
+            
+        days_diff = (df_subset['date'].iloc[0] - target_start).days
+        if days_diff > 30:
+            print(f"   ❌ 数据: 缺失开头 {days_diff} 天")
+            this_year_passed = False
         else:
-            print(f"\n🎉 匹配成功！")
-            print(f"✅ 该股票在 {check_date_str} 符合 【长牛 {year} 年】 标准！")
-            return
+            print(f"   ✅ 数据: 完整度 OK")
 
-    print(f"\n🚫 遗憾！该股票在 {check_date_str} 连 [长牛1年] 都不符合。")
+        # --- 检查 2: 流动性 ---
+        avg_turnover = df_subset['amount_est'].mean()
+        turnover_ok = avg_turnover >= MIN_TURNOVER
+        icon = "✅" if turnover_ok else "❌"
+        print(f"   {icon} 流动性: 日均 {avg_turnover/10000:.1f}万 (阈值: {MIN_TURNOVER/10000:.0f}万)")
+        if not turnover_ok: this_year_passed = False
+
+        # --- 检查 3: 年线支撑 (MA250) ---
+        is_broken, msg = check_ma250_interruption(df_subset)
+        icon = "❌" if is_broken else "✅"
+        print(f"   {icon} 年线支撑: {msg}")
+        if is_broken: this_year_passed = False
+
+        # --- 检查 4: KAMA 趋势完整性 ---
+        kama_ok, kama_msg, date_info, broken_days = check_kama_status_in_period(df_subset)
+        icon = "✅" if kama_ok else "❌"
+        
+        print(f"   {icon} KAMA趋势: {kama_msg}")
+        if not kama_ok:
+            print(f"      👉 累计确认破位: {broken_days} 个交易日")
+            if date_info:
+                print(f"      👉 最近/当前状态日期: {date_info}")
+            this_year_passed = False
+
+        # --- 检查 5: 回归分析 (R², 斜率, 年化) ---
+        y_data = df_subset['close'].astype(float).values
+        if len(y_data) < 20:
+             print("   ❌ 统计: 有效交易日太少")
+             this_year_passed = False
+        else:
+            start_ts = df_subset['date'].iloc[0]
+            x_data = (df_subset['date'] - start_ts).dt.days.values / 365.25
+            log_y_data = np.log(y_data)
+            slope, intercept, r_value, _, _ = stats.linregress(x_data, log_y_data)
+            
+            r_squared = r_value ** 2
+            annual_ret = (np.exp(slope) - 1) * 100
+            bull_score = annual_ret * r_squared
+
+            # R² 判定
+            r2_ok = r_squared >= MIN_R_SQUARED
+            icon = "✅" if r2_ok else "❌"
+            print(f"   {icon} 拟合度(R²): {r_squared:.4f} (阈值: {MIN_R_SQUARED})")
+            if not r2_ok: this_year_passed = False
+
+            # 趋势方向判定
+            trend_ok = slope > 0
+            icon = "✅" if trend_ok else "❌"
+            if not trend_ok:
+                print(f"   {icon} 趋势方向: 向下 (斜率<0)")
+                this_year_passed = False
+            
+            # 收益率判定
+            ret_ok = MIN_ANNUAL_RETURN <= annual_ret <= MAX_ANNUAL_RETURN
+            icon = "✅" if ret_ok else "❌"
+            print(f"   {icon} 年化收益: {annual_ret:.1f}% (阈值: {MIN_ANNUAL_RETURN}-{MAX_ANNUAL_RETURN}%)")
+            if not ret_ok: this_year_passed = False
+            
+            print(f"   📊 综合得分: {bull_score:.1f}")
+
+        # === 最终判定 ===
+        if this_year_passed:
+            print(f"\n🎉 恭喜！匹配成功：【长牛 {year} 年】")
+            return 
+        else:
+            print(f"   👉 结果: 不通过，降级继续...")
+
+    print(f"\n🚫 遗憾！该股票在 {check_date_str} 不符合任何长牛标准。")
 
 if __name__ == "__main__":
     try:
         input_code = input("请输入港股代码 (例如 00005): ").strip()
-        input_date = input("请输入检测日期 (格式 YYYY-MM-DD): ").strip()
-        
-        if not input_date:
-            input_date = datetime.now().strftime("%Y-%m-%d")
-            
+        input_date = input("请输入检测日期 (格式 YYYY-MM-DD，直接回车为今天): ").strip()
+        if not input_date: input_date = datetime.now().strftime("%Y-%m-%d")
         analyze_stock_levels(input_code, input_date)
-        
     except KeyboardInterrupt:
         print("\n已取消")

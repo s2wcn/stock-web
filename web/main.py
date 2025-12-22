@@ -1,3 +1,4 @@
+# 文件路径: web/main.py
 import uvicorn
 import importlib
 import sys
@@ -24,14 +25,15 @@ from database import stock_collection, config_collection, template_collection
 import crawler_hk as crawler
 from crawler_state import status 
 
-# 引入分析服务
+# 引入服务层
 from services.analysis_service import AnalysisService
-# 引入配置中的字段定义
-from config import COLUMN_CONFIG, NUMERIC_FIELDS
+from services.maintenance_service import MaintenanceService  # [新增]
+from config import COLUMN_CONFIG
 
-# 初始化调度器
+# 初始化调度器与服务
 scheduler = BackgroundScheduler(timezone=str(get_localzone()))
 analysis_service = AnalysisService(stock_collection, status)
+maintenance_service = MaintenanceService(stock_collection, status) # [新增]
 
 # 默认定时配置
 DEFAULT_SCHEDULE = {
@@ -44,14 +46,19 @@ DEFAULT_SCHEDULE = {
 # === 任务逻辑区域 ===
 
 def analyze_trend_task():
-    # 代理给 Service 处理
+    # 代理给 AnalysisService 处理
     analysis_service.analyze_trend()
+
+def recalculate_db_task():
+    # [优化] 代理给 MaintenanceService 处理
+    maintenance_service.run_recalculate_task()
 
 # 动态任务包装器
 def dynamic_task_wrapper():
     if not status.is_running:
         try:
             print("🔄 热加载爬虫模块...")
+            # 重新加载 crawler 模块以应用可能的代码更改 (开发模式下有用)
             importlib.reload(crawler)
             
             # 1. 运行爬虫
@@ -65,112 +72,6 @@ def dynamic_task_wrapper():
         except Exception as e:
             print(f"❌ 任务出错: {e}")
             status.finish(f"任务异常: {e}")
-
-def recalculate_db_task():
-    print("🔄 开始执行离线补全指标与类型修复...")
-    cursor = stock_collection.find({})
-    all_docs = list(cursor) 
-    total = len(all_docs)
-    status.start(total)
-    status.message = "正在读取数据库..."
-
-    for i, doc in enumerate(all_docs):
-        if status.should_stop:
-            status.finish("补全任务已终止")
-            return
-
-        code = doc["_id"]
-        if code.startswith("8"):
-             stock_collection.delete_one({"_id": code})
-             continue
-
-        name = doc["name"]
-        status.update(i + 1, message=f"正在清洗重算: {name}")
-        
-        history = doc.get("history", [])
-        if not history: continue
-        
-        updated_history = []
-        latest_record = {}
-
-        for item in history:
-            # [修复] 强制类型转换：遍历所有键，如果应该为数字但却是字符串，尝试修复
-            # 这解决了历史数据中可能存在的 "15.2" 字符串问题
-            for k, v in item.items():
-                if k in NUMERIC_FIELDS and isinstance(v, str):
-                    try:
-                        item[k] = float(v.replace(',', ''))
-                    except:
-                        pass # 无法转换则保持原样
-
-            def get_f(keys):
-                for k in keys:
-                    val = item.get(k)
-                    if val is not None:
-                        try:
-                            # 已经尝试过修复，这里再次确保安全
-                            return float(str(val).replace(',', ''))
-                        except:
-                            pass
-                return None
-
-            pe = get_f(['市盈率', 'PE'])
-            eps = get_f(['基本每股收益(元)', '基本每股收益'])
-            bvps = get_f(['每股净资产(元)', '每股净资产'])
-            growth = get_f(['净利润滚动环比增长(%)', '净利润环比增长'])
-            div_yield = get_f(['股息率TTM(%)', '股息率'])
-            ocf_ps = get_f(['每股经营现金流(元)', '每股经营现金流'])
-            roe = get_f(['股东权益回报率(%)', 'ROE'])
-            roa = get_f(['总资产回报率(%)', 'ROA'])
-            net_margin = get_f(['销售净利率(%)', '销售净利率'])
-
-            derived_keys = [
-                'PEG', 'PEGY', '彼得林奇估值', '净现比', '市现率', 
-                '财务杠杆', '总资产周转率', '格雷厄姆数', '合理股价'
-            ]
-            for key in derived_keys:
-                item.pop(key, None)
-
-            if pe and pe > 0 and growth and growth != 0:
-                item['PEG'] = round(pe / growth, 4)
-
-            if pe and pe > 0 and growth is not None and div_yield is not None:
-                total_return = growth + div_yield
-                if total_return > 0:
-                    item['PEGY'] = round(pe / total_return, 4)
-            
-            if eps is not None and growth is not None:
-                fair_price = eps * (8.5 + 2 * growth)
-                if fair_price > 0:
-                    item['合理股价'] = round(fair_price, 2)
-            
-            if ocf_ps is not None and eps and eps > 0:
-                item['净现比'] = round(ocf_ps / eps, 2)
-            
-            if pe and pe > 0 and eps and eps > 0 and ocf_ps and ocf_ps != 0:
-                price = pe * eps
-                item['市现率'] = round(price / ocf_ps, 2)
-
-            if roe is not None and roa and roa != 0:
-                item['财务杠杆'] = round(roe / roa, 2)
-
-            if roa is not None and net_margin and net_margin != 0:
-                item['总资产周转率'] = round(roa / net_margin, 2)
-
-            if eps is not None and bvps is not None:
-                val = 22.5 * eps * bvps
-                if val > 0:
-                    item['格雷厄姆数'] = round(math.sqrt(val), 2)
-            
-            updated_history.append(item)
-            latest_record = item
-
-        stock_collection.update_one(
-            {"_id": code},
-            {"$set": {"history": updated_history, "latest_data": latest_record}}
-        )
-
-    status.finish("全库清洗重算完成")
 
 # === 调度器逻辑 ===
 def update_scheduler_job(config: dict):
@@ -198,6 +99,7 @@ def update_scheduler_job(config: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 启动时加载配置并启动调度器
     config = config_collection.find_one({"_id": "schedule_config"})
     if not config:
         config = DEFAULT_SCHEDULE
@@ -205,9 +107,11 @@ async def lifespan(app: FastAPI):
     
     update_scheduler_job(config)
     scheduler.start()
+    print("✅ 后台调度器已启动")
     
     yield
     scheduler.shutdown()
+    print("🛑 后台调度器已关闭")
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -234,7 +138,7 @@ async def read_root(request: Request):
         "last_updated": last_time_str
     })
 
-# === [修改] 通用分页查询接口 (修复长牛评级筛选 Bug) ===
+# === 通用分页查询接口 ===
 @app.post("/api/stocks/query")
 async def query_stocks(
     page: int = Body(1), 
@@ -262,69 +166,52 @@ async def query_stocks(
             # 字段映射逻辑
             if key == "code":
                 db_key = "_id"
-            elif key.startswith("trend_analysis."):
+            elif key.startswith("trend_analysis.") or key.startswith("ma_strategy.") or key == "bull_label":
                 db_key = key 
-            elif key.startswith("ma_strategy."): 
-                db_key = key
-            elif key == "bull_label":
-                db_key = "bull_label" 
             elif key == "所属行业":
                 db_key = "latest_data.所属行业"
-            elif key not in ["_id", "name", "bull_label"]:
+            elif key not in ["_id", "name"]:
                 # 其他默认都在 latest_data 下
                 db_key = f"latest_data.{key}"
 
             min_v = range_val.get("min")
             max_v = range_val.get("max")
             
-            range_query = {}
-            
-            # === [核心修复] 针对 "bull_label" 的特殊数值范围处理 ===
+            # 处理 bull_label 的特殊数值范围 (例如 1-5 年)
             if key == "bull_label":
-                # 尝试判断用户是否输入了数字范围 (例如 1-5)
                 try:
                     target_labels = []
-                    # 如果有 min 或 max，尝试解析年份
                     start_year = int(float(min_v)) if (min_v is not None and min_v != "") else 1
                     end_year = int(float(max_v)) if (max_v is not None and max_v != "") else 5
                     
-                    # 生成匹配列表，例如 3-5 -> ["长牛3年", "长牛4年", "长牛5年"]
-                    # 假设系统目前支持 1 到 5 年
                     for y in range(1, 6):
                         if start_year <= y <= end_year:
                             target_labels.append(f"长牛{y}年")
                     
                     if target_labels:
                         filter_conditions.append({db_key: {"$in": target_labels}})
-                    continue # 处理完毕，跳过后续逻辑
-                    
+                    continue
                 except ValueError:
-                    # 如果输入的不是数字（比如输入了文本 "长牛"），则回退到下面的模糊匹配逻辑
                     pass
 
-            # 针对文本字段的模糊匹配 (行业、或者非数字的长牛搜索)
+            # 文本模糊匹配
             if key in ["所属行业", "bull_label"]:
                 if min_v: 
-                    range_query = {"$regex": str(min_v), "$options": "i"}
-                    filter_conditions.append({db_key: range_query})
+                    filter_conditions.append({db_key: {"$regex": str(min_v), "$options": "i"}})
                 continue 
 
-            # [修复] 健壮的数值范围逻辑，防止非数字筛选导致崩溃
+            # 数值范围匹配
+            range_query = {}
             if min_v is not None and min_v != "":
-                try:
-                    range_query["$gte"] = float(min_v)
-                except ValueError:
-                    pass # 忽略非数字输入
+                try: range_query["$gte"] = float(min_v)
+                except: pass
             
             if max_v is not None and max_v != "":
-                try:
-                    range_query["$lte"] = float(max_v)
-                except ValueError:
-                    pass
+                try: range_query["$lte"] = float(max_v)
+                except: pass
 
             if range_query:
-                cond = {db_key: range_query}
-                filter_conditions.append(cond)
+                filter_conditions.append({db_key: range_query})
         
         if filter_conditions:
             if "$or" in query:
@@ -339,8 +226,6 @@ async def query_stocks(
     sort_stage = [("_id", 1)]
     if sort_key:
         db_sort_key = sort_key
-        
-        # 排序字段映射
         if sort_key == "code":
             db_sort_key = "_id"
         elif sort_key not in ["_id", "name", "bull_label"] and not sort_key.startswith("trend_analysis") and not sort_key.startswith("ma_strategy"):
@@ -349,7 +234,7 @@ async def query_stocks(
         direction = 1 if sort_dir == "asc" else -1
         sort_stage = [(db_sort_key, direction)]
 
-    # 4. 执行
+    # 4. 执行查询
     total_count = stock_collection.count_documents(query)
     cursor = stock_collection.find(query).sort(sort_stage).skip((page - 1) * page_size).limit(page_size)
     
@@ -359,7 +244,7 @@ async def query_stocks(
         trend = doc.get("trend_analysis", {})
         ma_strat = doc.get("ma_strategy", {}) 
         
-        # 扁平化处理
+        # 扁平化处理，方便前端展示
         item = {
             "code": doc["_id"],
             "name": doc["name"],
@@ -395,7 +280,7 @@ async def query_stocks(
 
 @app.get("/api/history/{code}")
 async def get_history(code: str):
-    doc = stock_collection.find_one({"_id": code})
+    doc = stock_collection.find_one({"_id": code}, {"name": 1, "history": 1})
     if not doc:
         return {"name": code, "history": []}
     return {"name": doc["name"], "history": doc.get("history", [])}
@@ -418,8 +303,9 @@ async def stop_crawl():
 async def trigger_recalculate(background_tasks: BackgroundTasks):
     if status.is_running:
         return {"success": False, "message": "后台已有任务在运行，请稍候..."}
+    # 使用重构后的 Service 执行
     background_tasks.add_task(recalculate_db_task)
-    return {"success": True, "message": "已开始补全计算，请留意右上角进度条"}
+    return {"success": True, "message": "已开始补全计算 (批量优化版)，请留意右上角进度条"}
 
 @app.get("/api/status")
 async def get_status():
@@ -434,7 +320,7 @@ def restart_program():
     time.sleep(0.5) 
     current_file = os.path.abspath(__file__)
     if os.path.exists(current_file):
-        os.utime(current_file, None)
+        os.utime(current_file, None) # 触发 uvicorn reload
 
 @app.post("/api/restart")
 async def restart_service(background_tasks: BackgroundTasks):

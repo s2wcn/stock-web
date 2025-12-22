@@ -1,3 +1,4 @@
+// 文件路径: web/static/script.js
 // 全局变量
 const g_columns = window.g_columns || [];
 let g_templates = []; 
@@ -204,12 +205,26 @@ function renderRows(batch) {
                     badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">优</span>`;
                 }
 
-                // === [新增] 策略数据的视觉增强 ===
+                // === [修改] 策略数据标签逻辑 ===
                 else if (col.key === 'ma_strategy.total_return') {
-                    if (num >= 50) {
-                        badge = `<span class="badge bg-danger ms-1" style="font-size:10px; padding:2px 4px;">🔥超强</span>`;
-                    } else if (num >= 20) {
-                        badge = `<span class="badge bg-success ms-1" style="font-size:10px; padding:2px 4px;">优秀</span>`;
+                    // 获取基准回报率
+                    let benchVal = parseFloat(String(stock['ma_strategy.benchmark_return'] || '0').replace(/,/g, ''));
+                    
+                    // 只有当基准回报率有效且不为0时才计算比值
+                    if (!isNaN(benchVal) && Math.abs(benchVal) > 0.001) {
+                        let ratio = num / benchVal;
+                        
+                        if (ratio >= 1.5) {
+                            badge = `<span class="badge bg-danger ms-1" style="font-size:10px; padding:2px 4px;">优秀</span>`;
+                        } else if (ratio >= 1.2) {
+                            badge = `<span class="badge bg-warning text-dark ms-1" style="font-size:10px; padding:2px 4px;">良好</span>`;
+                        } else if (ratio < 1.0) {
+                            // 小于1表示跑输基准
+                            badge = `<span class="badge bg-secondary ms-1" style="font-size:10px; padding:2px 4px;">不佳</span>`;
+                        }
+                    } else if (num > 0 && benchVal <= 0) {
+                        // 特殊情况：策略赚钱，基准亏钱或不赚钱 -> 显然也是优秀
+                        badge = `<span class="badge bg-danger ms-1" style="font-size:10px; padding:2px 4px;">优秀</span>`;
                     }
                 }
                 else if (col.key === 'ma_strategy.win_rate' && num >= 80) {

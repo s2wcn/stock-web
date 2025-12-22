@@ -32,10 +32,10 @@ class AnalysisService:
         
         # 2. 年化收益率 (%): 过滤掉涨太慢的蜗牛和涨太快的妖股
         MIN_ANNUAL_RETURN = 10.0   
-        MAX_ANNUAL_RETURN = 200.0   
+        MAX_ANNUAL_RETURN = 150.0   
         
-        # 3. 流动性门槛: 日均成交额需大于 500万 港币，避免流动性陷阱
-        MIN_TURNOVER = 5_000_000   
+        # 3. 流动性门槛: 日均成交额需大于 5000万 港币，避免流动性陷阱
+        MIN_TURNOVER = 50_000_000   
         
         # 4. 市值门槛: 必须大于 100亿 港币，只选大盘蓝筹/龙头
         MIN_MARKET_CAP = 10_000_000_000 
