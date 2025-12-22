@@ -1,7 +1,6 @@
 # 文件路径: web/config.py
 
 # === 字段清洗配置 ===
-# 需要被强制转换为浮点数的字段列表
 NUMERIC_FIELDS = [
     "基本每股收益(元)", "每股净资产(元)", "法定股本(股)", "每手股", 
     "每股股息TTM(港元)", "派息比率(%)", "已发行股本(股)", "已发行股本-H股(股)", 
@@ -15,16 +14,11 @@ NUMERIC_FIELDS = [
 ]
 
 # === 前端表格列配置 ===
-# key: 数据库字段名 (或计算字段名)
-# label: 表头显示名称
-# desc: 详细描述
-# tip: 鼠标悬停提示
 COLUMN_CONFIG = [
     {"key": "所属行业", "label": "行业", "desc": "公司所属行业板块", "tip": "按东财/GICS分类标准划分", "no_sort": True, "no_chart": True},
     {"key": "bull_label", "label": "长牛评级", "desc": "长牛分级筛选", "tip": "基于5年走势算法筛选。<br>需满足：<br>1. R²>0.8<br>2. 年化10%-60%<br>3. <b>日均成交 > 500万</b><br>4. <b>ROE > 0</b>", "no_chart": True},
     {"key": "trend_analysis.r_squared", "label": "趋势R²", "desc": "对应周期的拟合度", "tip": "股价走势越接近直线，该值越接近1。<br><b>>0.8</b> 表示极度平稳。", "no_chart": True},
     
-    # === [修改] 将"年化%"替换为"基准回报%"，以便与策略回报进行同维对比 ===
     {
         "key": "ma_strategy.benchmark_return", 
         "label": "基准回报%", 
@@ -55,7 +49,8 @@ COLUMN_CONFIG = [
         "key": "ma_strategy.buy_bias", 
         "label": "买入阈值", 
         "desc": "最佳买入偏离度", 
-        "tip": "当(现价-MA20)/MA20低于此值时买入", 
+        # [修改] 提示文本改为 MA60
+        "tip": "当(现价-MA60)/MA60低于此值时买入", 
         "suffix": "%",
         "no_chart": True
     },

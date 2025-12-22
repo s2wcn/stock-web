@@ -27,13 +27,14 @@ from crawler_state import status
 
 # 引入服务层
 from services.analysis_service import AnalysisService
-from services.maintenance_service import MaintenanceService  # [新增]
+from services.maintenance_service import MaintenanceService  
 from config import COLUMN_CONFIG
+from logger import sys_logger as logger
 
 # 初始化调度器与服务
 scheduler = BackgroundScheduler(timezone=str(get_localzone()))
 analysis_service = AnalysisService(stock_collection, status)
-maintenance_service = MaintenanceService(stock_collection, status) # [新增]
+maintenance_service = MaintenanceService(stock_collection, status) 
 
 # 默认定时配置
 DEFAULT_SCHEDULE = {
@@ -46,31 +47,35 @@ DEFAULT_SCHEDULE = {
 # === 任务逻辑区域 ===
 
 def analyze_trend_task():
-    # 代理给 AnalysisService 处理
+    # 仅执行趋势分析
     analysis_service.analyze_trend()
 
 def recalculate_db_task():
-    # [优化] 代理给 MaintenanceService 处理
     maintenance_service.run_recalculate_task()
 
-# 动态任务包装器
+# [修改] 动态任务包装器：全流程自动化
 def dynamic_task_wrapper():
     if not status.is_running:
         try:
-            print("🔄 热加载爬虫模块...")
-            # 重新加载 crawler 模块以应用可能的代码更改 (开发模式下有用)
+            # 1. 爬虫 (IO密集) - 抓取实时数据 + 增强QFQ历史
+            logger.info("🔄 任务阶段 1/3: 启动爬虫...")
             importlib.reload(crawler)
-            
-            # 1. 运行爬虫
             crawler.run_crawler_task()
             
-            # 2. 爬虫完成后，自动运行趋势分析
-            if not status.should_stop:
-                print("🔗 爬虫结束，自动启动趋势分析...")
-                analyze_trend_task()
-                
+            if status.should_stop: return
+
+            # 2. 趋势分析 (CPU - 轻量) - 标记长牛股
+            logger.info("🔄 任务阶段 2/3: 启动趋势分析...")
+            analysis_service.analyze_trend()
+
+            if status.should_stop: return
+
+            # 3. 策略优化 (CPU - 重量) - 只算长牛股
+            logger.info("🔄 任务阶段 3/3: 启动策略参数优化...")
+            analysis_service.optimize_strategies()
+            
         except Exception as e:
-            print(f"❌ 任务出错: {e}")
+            logger.error(f"❌ 任务出错: {e}")
             status.finish(f"任务异常: {e}")
 
 # === 调度器逻辑 ===
@@ -94,7 +99,7 @@ def update_scheduler_job(config: dict):
         scheduler.add_job(dynamic_task_wrapper, trigger, id='crawler_job')
         return True
     except Exception as e:
-        print(f"❌ 更新定时任务失败: {e}")
+        logger.error(f"❌ 更新定时任务失败: {e}")
         return False
 
 @asynccontextmanager
@@ -107,11 +112,11 @@ async def lifespan(app: FastAPI):
     
     update_scheduler_job(config)
     scheduler.start()
-    print("✅ 后台调度器已启动")
+    logger.info("✅ 后台调度器已启动")
     
     yield
     scheduler.shutdown()
-    print("🛑 后台调度器已关闭")
+    logger.info("🛑 后台调度器已关闭")
 
 app = FastAPI(lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -262,7 +267,9 @@ async def query_stocks(
             item["ma_strategy.benchmark_return"] = ma_strat.get("benchmark_return")
             
             params = ma_strat.get("params", {})
-            item["ma_strategy.buy_bias"] = params.get("buy_ma20_bias")
+            # [修改] 使用新的变量名 buy_ma60_bias 获取数据
+            # 注意：前端 Key 依然叫 ma_strategy.buy_bias 以保持兼容
+            item["ma_strategy.buy_bias"] = params.get("buy_ma60_bias")
             item["ma_strategy.sell_bias"] = params.get("sell_ma5_bias")
             
             metrics = ma_strat.get("metrics", {})

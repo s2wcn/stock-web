@@ -4,6 +4,7 @@ from pymongo import UpdateOne
 from database import stock_collection
 from crawler_state import status
 from config import NUMERIC_FIELDS
+from logger import sys_logger as logger # [新增] 引入日志
 
 class MaintenanceService:
     def __init__(self, collection, status_tracker):
@@ -18,7 +19,7 @@ class MaintenanceService:
         2. 使用 cursor 迭代器，避免一次性加载全库导致内存溢出
         3. 使用 bulk_write 批量提交修改，大幅降低数据库 IO 耗时
         """
-        print("🔄 Service: 开始执行离线补全指标与类型修复...")
+        logger.info("🔄 Service: 开始执行离线补全指标与类型修复...")
         
         # 1. 获取总数用于进度条，但不加载具体数据
         total = self.collection.count_documents({})
@@ -150,7 +151,7 @@ class MaintenanceService:
                 try:
                     self.collection.bulk_write(batch_ops, ordered=False)
                 except Exception as e:
-                    print(f"⚠️ 批量写入部分失败: {e}")
+                    logger.warning(f"⚠️ 批量写入部分失败: {e}")
                 batch_ops = []
 
         # 提交剩余的
@@ -158,6 +159,6 @@ class MaintenanceService:
             try:
                 self.collection.bulk_write(batch_ops, ordered=False)
             except Exception as e:
-                print(f"⚠️ 最后批量写入失败: {e}")
+                logger.error(f"⚠️ 最后批量写入失败: {e}")
 
         self.status.finish("全库清洗重算完成")
