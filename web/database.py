@@ -1,8 +1,12 @@
 # 文件路径: web/database.py
 import os
 from pymongo import MongoClient, ASCENDING, DESCENDING
+from pymongo.collection import Collection
+from pymongo.database import Database
+from typing import Optional
 
 # === 配置区域 ===
+# 小白注释: os.getenv 尝试从环境变量获取配置，如果没获取到就用后面的默认值
 MONGO_HOST = os.getenv("MONGO_HOST", "192.168.1.252")
 MONGO_PORT = int(os.getenv("MONGO_PORT", 27017))
 MONGO_USER = os.getenv("MONGO_USER", "")
@@ -15,13 +19,15 @@ if MONGO_USER:
 else:
     MONGO_URI = f"mongodb://{MONGO_HOST}:{MONGO_PORT}/"
 
-client = None
-db = None
-stock_collection = None
-config_collection = None
-template_collection = None
+# 全局变量定义
+client: Optional[MongoClient] = None
+db: Optional[Database] = None
+stock_collection: Optional[Collection] = None
+config_collection: Optional[Collection] = None
+template_collection: Optional[Collection] = None
 
 def init_db():
+    """初始化数据库连接及索引"""
     global client, db, stock_collection, config_collection, template_collection
     try:
         # connect=False: 避免在 import 时立即连接，防止多进程 fork 时死锁
@@ -35,7 +41,8 @@ def init_db():
         print(f"✅ MongoDB 配置就绪: {MONGO_HOST}:{MONGO_PORT} / {DB_NAME}")
 
         # === 索引优化 ===
-        # 使用 background=True 在后台创建索引，避免阻塞服务启动
+        # 小白注释: 索引就像书的目录，能让数据库查询速度快几百倍。
+        # background=True 表示在后台建索引，不卡顿前台业务。
         print("🛠️ 正在后台检查索引...")
         
         stock_collection.create_index([("name", ASCENDING)], background=True)
@@ -49,8 +56,8 @@ def init_db():
             "latest_data.PEG", 
             "latest_data.股息率TTM(%)",
             "latest_data.股东权益回报率(%)",
-            "latest_data.所属行业", # 新增
-            "trend_analysis.r_squared" # 新增
+            "latest_data.所属行业",
+            "trend_analysis.r_squared"
         ]
         for field in index_fields:
             stock_collection.create_index([(field, ASCENDING)], background=True)
