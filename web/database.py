@@ -1,5 +1,6 @@
 # 文件路径: web/database.py
 import os
+import multiprocessing # [新增]
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from pymongo.collection import Collection
 from pymongo.database import Database
@@ -38,29 +39,29 @@ def init_db():
         config_collection = db["system_config"] 
         template_collection = db["filter_templates"]
 
-        print(f"✅ MongoDB 配置就绪: {MONGO_HOST}:{MONGO_PORT} / {DB_NAME}")
-
-        # === 索引优化 ===
-        # 小白注释: 索引就像书的目录，能让数据库查询速度快几百倍。
-        # background=True 表示在后台建索引，不卡顿前台业务。
-        print("🛠️ 正在后台检查索引...")
-        
-        stock_collection.create_index([("name", ASCENDING)], background=True)
-        stock_collection.create_index([("is_ggt", ASCENDING)], background=True)
-        stock_collection.create_index([("bull_label", ASCENDING)], background=True)
-        
-        # 针对筛选和排序的高频字段
-        index_fields = [
-            "latest_data.昨收", 
-            "latest_data.市盈率", 
-            "latest_data.PEG", 
-            "latest_data.股息率TTM(%)",
-            "latest_data.股东权益回报率(%)",
-            "latest_data.所属行业",
-            "trend_analysis.r_squared"
-        ]
-        for field in index_fields:
-            stock_collection.create_index([(field, ASCENDING)], background=True)
+        # === [修改] 仅主进程建立索引 ===
+        # 子进程(Worker)不需要重复建立索引，这能减少数据库启动时的压力
+        if multiprocessing.current_process().name == 'MainProcess':
+            print(f"✅ MongoDB 配置就绪: {MONGO_HOST}:{MONGO_PORT} / {DB_NAME}")
+            print("🛠️ 正在后台检查索引...")
+            
+            stock_collection.create_index([("name", ASCENDING)], background=True)
+            stock_collection.create_index([("is_ggt", ASCENDING)], background=True)
+            stock_collection.create_index([("bull_label", ASCENDING)], background=True)
+            
+            # 针对筛选和排序的高频字段
+            index_fields = [
+                "latest_data.昨收", 
+                "latest_data.市盈率", 
+                "latest_data.PEG", 
+                "latest_data.股息率TTM(%)",
+                "latest_data.股东权益回报率(%)",
+                "latest_data.所属行业",
+                "trend_analysis.r_squared"
+            ]
+            for field in index_fields:
+                stock_collection.create_index([(field, ASCENDING)], background=True)
+        # ============================
             
     except Exception as e:
         print(f"❌ MongoDB 初始化配置失败: {e}")

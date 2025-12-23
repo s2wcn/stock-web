@@ -367,6 +367,12 @@ async def fetch_single_stock_op_async(code: str, name: str, is_ggt: Optional[boo
 
 def run_crawler_task():
     """爬虫任务主入口"""
+    # === [新增] 检查数据是否最新 ===
+    # 如果数据库中 95% 以上的数据日期都是最新的，则跳过爬虫，直接进入分析
+    if check_data_freshness():
+        return
+    # ============================
+
     logger.info(f"[{datetime.now()}] 🚀 开始 MongoDB 采集任务 (HK) - 稳健版...")
     stock_collection.delete_many({"_id": {"$regex": "^8"}})
     

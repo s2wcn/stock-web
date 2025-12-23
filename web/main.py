@@ -20,7 +20,8 @@ from database import stock_collection, config_collection, template_collection
 import crawler_hk as crawler
 from crawler_state import status 
 from services.analysis_service import AnalysisService
-from services.maintenance_service import MaintenanceService  
+from services.maintenance_service import MaintenanceService
+from services.notification_service import DingTalkService # [新增] 引入通知服务
 from config import COLUMN_CONFIG
 from logger import sys_logger as logger
 
@@ -82,15 +83,25 @@ def dynamic_task_wrapper():
             
             if status.should_stop: return
 
-            # [新增] 阶段 4: 信号检查与通知
             logger.info("🔄 任务阶段 4/4: 检查买卖信号并通知...")
             analysis_service.check_signals_and_notify()
             
             logger.info("🎉 全流程任务执行完毕")
             
         except Exception as e:
-            logger.error(f"❌ 任务出错: {e}")
-            status.finish(f"任务异常: {e}")
+            error_msg = f"❌ 任务出错: {e}"
+            logger.error(error_msg)
+            status.finish(f"任务异常: {str(e)[:50]}...")
+            
+            # === [新增] 发送钉钉报警 ===
+            try:
+                DingTalkService.send_markdown(
+                    "🚨 任务异常告警",
+                    f"### ❌ 任务执行失败\n\n**错误信息**:\n> {str(e)}\n\n**发生时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                )
+            except Exception as notify_err:
+                logger.error(f"发送报警失败: {notify_err}")
+            # ==========================
 
 def update_scheduler_job(config: dict):
     try:
