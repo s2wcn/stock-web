@@ -12,8 +12,10 @@ from typing import Optional, Dict, List, Tuple
 from config import StrategyConfig, DingTalkConfig
 from logger import analysis_logger as logger
 from services.notification_service import DingTalkService
+# [新增] 引入消息模板模块
+from message_templates import DingTalkTemplates 
 
-# === Numba 加速内核 ===
+# === Numba 加速内核 (保持不变) ===
 @jit(nopython=True)
 def backtest_numba(
     close_arr: np.ndarray, 
@@ -66,6 +68,7 @@ def backtest_numba(
     return_pct = (final_value - initial_capital) / initial_capital * 100
     return return_pct, trade_count, win_count
 
+# === 策略优化子进程函数 (保持不变) ===
 def _worker_optimize_stock(doc_data: Dict) -> Optional[Tuple[str, str, Dict]]:
     code = doc_data["_id"]
     qfq_list = doc_data.get("qfq_history", [])
@@ -166,7 +169,6 @@ class AnalysisService:
         logger.info("🚀 Service: 开始执行【5年长牛分级筛选】(优化内存模式)...")
         
         # [优化点 1] 仅查询 ID 和 基本信息，不要一次性加载所有历史数据 (qfq_history)
-        # 否则 2000 只股票 * 5年数据会瞬间撑爆内存
         cursor = self.collection.find({}, {"_id": 1, "name": 1, "latest_data": 1})
         all_basic_docs = list(cursor)
         
@@ -185,17 +187,14 @@ class AnalysisService:
 
             if self.status: self.status.update(i + 1, message=f"分析: {basic_doc.get('name')}")
             
-            # [优化点 2] 每 20 只股票强制休眠 0.1 秒，释放 CPU 给 Web 服务器，防止网页打不开
+            # [优化点 2] 每 20 只股票强制休眠 0.1 秒，释放 CPU
             if i % 20 == 0:
                 time.sleep(0.1)
 
             try:
                 # [优化点 3] 只有分析到当前这只股票时，才去数据库单独查它的历史数据
-                # 用完即丢，保证内存占用平稳
                 full_doc = self.collection.find_one({"_id": code}, {"qfq_history": 1, "latest_data": 1})
                 if full_doc:
-                    # 合并 basic_doc 和 full_doc (主要是为了把 name 传进去，虽然 analyze_single_stock 目前主要用 history)
-                    # _analyze_single_stock 需要 qfq_history 和 latest_data
                     full_doc["name"] = basic_doc.get("name")
                     self._analyze_single_stock(full_doc)
                     
@@ -207,7 +206,6 @@ class AnalysisService:
     def optimize_strategies(self):
         logger.info("🚀 Service: 开始对长牛股进行【策略参数优化】...")
         
-        # 这里数据量相对较少（只有被选出的长牛股），可以直接查询
         target_stocks = list(self.collection.find({"bull_label": {"$exists": True}}))
         
         total = len(target_stocks)
@@ -229,14 +227,18 @@ class AnalysisService:
         if self.status: self.status.finish("全流程分析完成")
 
     def check_signals_and_notify(self):
+        """
+        检查所有长牛股的最新价格是否触发策略信号，并发送钉钉通知。
+        """
         logger.info("🔔 正在检查今日买卖信号...")
         
+        # 筛选出有长牛评级、有策略数据、且有历史数据的股票
         query = {
             "bull_label": {"$exists": True}, 
             "ma_strategy": {"$exists": True},
             "qfq_history": {"$exists": True, "$not": {"$size": 0}}
         }
-        # 限制历史数据返回数量，只取最近 100 天
+        # 限制历史数据返回数量，只取最近 100 天，减少内存消耗
         cursor = self.collection.find(query, {"_id": 1, "name": 1, "bull_label": 1, "ma_strategy": 1, "qfq_history": {"$slice": -100}})
         
         buy_signals = []
@@ -257,17 +259,19 @@ class AnalysisService:
                 
                 if buy_threshold_pct is None or sell_threshold_pct is None: continue
                 
+                # 数据预处理
                 df = pd.DataFrame(history)
                 df['close'] = pd.to_numeric(df['close'], errors='coerce')
                 df = df.dropna(subset=['close'])
                 if len(df) < 60: continue
                 
+                # 检查数据时效性（如果数据停留在5天前，则不发信号，避免误报旧数据）
                 latest = df.iloc[-1]
                 latest_date = pd.to_datetime(latest['date']).strftime("%Y-%m-%d")
-                
                 if (datetime.now() - datetime.strptime(latest_date, "%Y-%m-%d")).days > 5:
                     continue
 
+                # 计算指标
                 ma5 = df['close'].rolling(5).mean().iloc[-1]
                 ma60 = df['close'].rolling(60).mean().iloc[-1]
                 close = latest['close']
@@ -275,42 +279,41 @@ class AnalysisService:
                 bias_5_pct = (close - ma5) / ma5 * 100
                 bias_60_pct = (close - ma60) / ma60 * 100
                 
+                # --- 信号判定逻辑 ---
+                
+                # 1. 买入信号 (低于买入阈值)
                 if bias_60_pct <= buy_threshold_pct:
-                    buy_signals.append(f"- **{name}** ({code}): 现偏离 {bias_60_pct:.2f}% (破 {buy_threshold_pct}%) 🟢 买入")
+                    buy_signals.append(f"**{name}** ({code}): 现偏离 {bias_60_pct:.2f}% (破 {buy_threshold_pct}%)")
                 
+                # 2. 接近买点 (进入缓冲带)
                 elif (bias_60_pct - buy_threshold_pct) <= abs(buy_threshold_pct * DingTalkConfig.APPROACH_BUFFER):
-                    approach_buy_signals.append(f"- {name} ({code}): 现偏离 {bias_60_pct:.2f}% (近 {buy_threshold_pct}%)")
+                    approach_buy_signals.append(f"{name} ({code}): 现偏离 {bias_60_pct:.2f}% (近 {buy_threshold_pct}%)")
 
+                # 3. 卖出信号 (高于卖出阈值)
                 if bias_5_pct >= sell_threshold_pct:
-                    sell_signals.append(f"- **{name}** ({code}): 现偏离 {bias_5_pct:.2f}% (破 {sell_threshold_pct}%) 🔴 卖出")
+                    sell_signals.append(f"**{name}** ({code}): 现偏离 {bias_5_pct:.2f}% (破 {sell_threshold_pct}%)")
                 
+                # 4. 接近卖点
                 elif (sell_threshold_pct - bias_5_pct) <= abs(sell_threshold_pct * DingTalkConfig.APPROACH_BUFFER):
-                    approach_sell_signals.append(f"- {name} ({code}): 现偏离 {bias_5_pct:.2f}% (近 {sell_threshold_pct}%)")
+                    approach_sell_signals.append(f"{name} ({code}): 现偏离 {bias_5_pct:.2f}% (近 {sell_threshold_pct}%)")
 
             except Exception as e:
                 logger.error(f"信号检查出错 {code}: {e}")
 
+        # === [修改] 发送通知逻辑 ===
+        # 如果有任何一种信号，则调用模板生成内容并发送
         if any([buy_signals, sell_signals, approach_buy_signals, approach_sell_signals]):
-            title = "📢 港股长牛策略信号"
-            content = [f"## {title} ({datetime.now().strftime('%m-%d %H:%M')})"]
             
-            if buy_signals:
-                content.append("\n### 🟢 触发买入")
-                content.extend(buy_signals)
+            # 使用 Template 生成标准化的 Title 和 Markdown Body
+            title, text = DingTalkTemplates.strategy_signal_report(
+                buy_signals, 
+                sell_signals, 
+                approach_buy_signals, 
+                approach_sell_signals
+            )
             
-            if sell_signals:
-                content.append("\n### 🔴 触发卖出")
-                content.extend(sell_signals)
-                
-            if approach_buy_signals:
-                content.append("\n#### 📉 接近买点")
-                content.extend(approach_buy_signals)
-
-            if approach_sell_signals:
-                content.append("\n#### 📈 接近卖点")
-                content.extend(approach_sell_signals)
-            
-            DingTalkService.send_markdown(title, "\n".join(content))
+            # 发送
+            DingTalkService.send_markdown(title, text)
         else:
             logger.info("🔕 今日无重点信号触发")
 
@@ -324,8 +327,6 @@ class AnalysisService:
             self.collection.update_one({"_id": code}, {"$unset": {"bull_label": "", "trend_analysis": ""}})
             return
 
-        # 这里的 fetch 逻辑在优化版 analyze_trend 中已经通过单独查库获取了 qfq_history
-        # 但如果是单个重算调用，可能还需要兼容
         qfq_data = doc.get("qfq_history", [])
         
         if not qfq_data:

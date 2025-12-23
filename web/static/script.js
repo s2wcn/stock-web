@@ -362,9 +362,28 @@ function restartService() {
     });
 }
 
+// [修改] 模态框实例
+var crawlOptionModal = new bootstrap.Modal(document.getElementById('crawlOptionModal'));
+
+// [修改] 弹出选择框
 function triggerCrawl() {
+    crawlOptionModal.show();
+}
+
+// [新增] 处理刷新确认
+function confirmCrawl(isForce) {
+    crawlOptionModal.hide(); 
     document.getElementById('refreshBtn').disabled = true;
-    fetch('/api/trigger_crawl');
+    
+    fetch(`/api/trigger_crawl?force=${isForce}`)
+        .then(res => res.json())
+        .then(data => {
+            console.log(data.message);
+        })
+        .catch(err => {
+            console.error(err);
+            document.getElementById('refreshBtn').disabled = false;
+        });
 }
 
 function stopTask() {

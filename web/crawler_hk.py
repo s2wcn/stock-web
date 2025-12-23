@@ -365,13 +365,15 @@ async def fetch_single_stock_op_async(code: str, name: str, is_ggt: Optional[boo
         logger.error(f"[{code}] 处理异常: {e}")
         return None
 
-def run_crawler_task():
+def run_crawler_task(force_update: bool = False):
     """爬虫任务主入口"""
     # === [新增] 检查数据是否最新 ===
-    # 如果数据库中 95% 以上的数据日期都是最新的，则跳过爬虫，直接进入分析
-    if check_data_freshness():
-        return
-    # ============================
+    # 如果数据库中 95% 以上的数据日期都是最新的，且不强制更新，则跳过爬虫
+    if not force_update:
+        if check_data_freshness():
+            return
+    else:
+        logger.info("🔥 用户通过指令强制启动爬虫 (忽略新鲜度检查)")
 
     logger.info(f"[{datetime.now()}] 🚀 开始 MongoDB 采集任务 (HK) - 稳健版...")
     stock_collection.delete_many({"_id": {"$regex": "^8"}})

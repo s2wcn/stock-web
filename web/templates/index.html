@@ -268,6 +268,29 @@
     </div>
 </div>
 
+<div class="modal fade" id="crawlOptionModal" tabindex="-1">
+    <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">⚡ 请选择刷新模式</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-grid gap-3">
+                    <button class="btn btn-primary btn-lg" onclick="confirmCrawl(true)">
+                        🔥 强制重爬
+                        <div class="small fw-normal opacity-75">忽略数据日期，重新抓取最新数据</div>
+                    </button>
+                    <button class="btn btn-outline-secondary btn-lg" onclick="confirmCrawl(false)">
+                        🧠 智能刷新 (推荐)
+                        <div class="small fw-normal text-muted">如果数据已是最新，则跳过爬虫直接分析</div>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
     // 初始化变量，数据通过 AJAX 加载
     window.g_stockData = [];

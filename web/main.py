@@ -21,7 +21,9 @@ import crawler_hk as crawler
 from crawler_state import status 
 from services.analysis_service import AnalysisService
 from services.maintenance_service import MaintenanceService
-from services.notification_service import DingTalkService # [新增] 引入通知服务
+from services.notification_service import DingTalkService 
+# [新增] 引入消息模板
+from message_templates import DingTalkTemplates 
 from config import COLUMN_CONFIG
 from logger import sys_logger as logger
 
@@ -62,14 +64,22 @@ DEFAULT_SCHEDULE = {
 }
 
 # === 任务与调度 ===
-def dynamic_task_wrapper():
-    """全自动任务流: 爬虫 -> 分析 -> 策略 -> 通知"""
+def dynamic_task_wrapper(force_update: bool = True):
+    """
+    全自动任务流: 爬虫 -> 分析 -> 策略 -> 通知
+    
+    Args:
+        force_update: 是否强制更新（忽略数据新鲜度校验）。
+                      定时任务默认 True，手动触发可选。
+    """
     if not status.is_running:
         try:
-            logger.info("🔄 任务阶段 1/4: 启动爬虫...")
+            logger.info(f"🔄 任务阶段 1/4: 启动爬虫 (强制模式: {force_update})...")
             # reload 确保代码修改后不用重启也能生效 (开发模式用)
             importlib.reload(crawler)
-            crawler.run_crawler_task()
+            
+            # 传递 force_update 参数给爬虫模块
+            crawler.run_crawler_task(force_update=force_update)
             
             if status.should_stop: return
 
@@ -93,12 +103,11 @@ def dynamic_task_wrapper():
             logger.error(error_msg)
             status.finish(f"任务异常: {str(e)[:50]}...")
             
-            # === [新增] 发送钉钉报警 ===
+            # === [修改] 发送钉钉报警 (使用模板) ===
             try:
-                DingTalkService.send_markdown(
-                    "🚨 任务异常告警",
-                    f"### ❌ 任务执行失败\n\n**错误信息**:\n> {str(e)}\n\n**发生时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-                )
+                # 使用 Template 生成标准化的报警文案
+                title, text = DingTalkTemplates.task_exception_report(str(e))
+                DingTalkService.send_markdown(title, text)
             except Exception as notify_err:
                 logger.error(f"发送报警失败: {notify_err}")
             # ==========================
@@ -119,7 +128,8 @@ def update_scheduler_job(config: dict):
         else:
             trigger = CronTrigger(hour=hour, minute=minute, timezone=local_tz)
 
-        scheduler.add_job(dynamic_task_wrapper, trigger, id='crawler_job')
+        # 定时任务默认使用强制更新模式 (force_update=True)
+        scheduler.add_job(dynamic_task_wrapper, trigger, id='crawler_job', kwargs={"force_update": True})
         return True
     except Exception as e:
         logger.error(f"❌ 更新定时任务失败: {e}")
@@ -285,11 +295,21 @@ async def get_history(code: str):
     return {"name": doc["name"], "history": doc.get("history", [])}
 
 @app.get("/api/trigger_crawl")
-async def trigger_crawl(background_tasks: BackgroundTasks):
+async def trigger_crawl(background_tasks: BackgroundTasks, force: bool = False):
+    """
+    手动触发爬虫接口
+    
+    Args:
+        force: 是否强制重爬（忽略数据新鲜度）
+    """
     if status.is_running:
         return {"success": False, "message": "任务正在运行中，请勿重复触发"}
-    background_tasks.add_task(dynamic_task_wrapper)
-    return {"success": True, "message": "后台任务已启动 (爬虫 + 趋势分析 + 策略优化 + 钉钉通知)"}
+    
+    # 传递 force_update 参数
+    background_tasks.add_task(dynamic_task_wrapper, force_update=force)
+    
+    mode_text = "强制重爬" if force else "智能刷新"
+    return {"success": True, "message": f"后台任务已启动 ({mode_text} + 趋势分析 + 策略优化 + 钉钉通知)"}
 
 @app.post("/api/stop_crawl")
 async def stop_crawl():
