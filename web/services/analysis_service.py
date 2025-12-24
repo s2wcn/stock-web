@@ -12,10 +12,9 @@ from typing import Optional, Dict, List, Tuple
 from config import StrategyConfig, DingTalkConfig
 from logger import analysis_logger as logger
 from services.notification_service import DingTalkService
-# [新增] 引入消息模板模块
 from message_templates import DingTalkTemplates 
 
-# === Numba 加速内核 (保持不变) ===
+# === Numba 加速内核 ===
 @jit(nopython=True)
 def backtest_numba(
     close_arr: np.ndarray, 
@@ -68,7 +67,7 @@ def backtest_numba(
     return_pct = (final_value - initial_capital) / initial_capital * 100
     return return_pct, trade_count, win_count
 
-# === 策略优化子进程函数 (保持不变) ===
+# === 策略优化子进程函数 ===
 def _worker_optimize_stock(doc_data: Dict) -> Optional[Tuple[str, str, Dict]]:
     code = doc_data["_id"]
     qfq_list = doc_data.get("qfq_history", [])
@@ -165,10 +164,9 @@ class AnalysisService:
         self.status = status_tracker
 
     def analyze_trend(self):
-        """执行长牛趋势分析 (内存优化版)"""
+        """执行长牛趋势分析"""
         logger.info("🚀 Service: 开始执行【5年长牛分级筛选】(优化内存模式)...")
         
-        # [优化点 1] 仅查询 ID 和 基本信息，不要一次性加载所有历史数据 (qfq_history)
         cursor = self.collection.find({}, {"_id": 1, "name": 1, "latest_data": 1})
         all_basic_docs = list(cursor)
         
@@ -187,12 +185,10 @@ class AnalysisService:
 
             if self.status: self.status.update(i + 1, message=f"分析: {basic_doc.get('name')}")
             
-            # [优化点 2] 每 20 只股票强制休眠 0.1 秒，释放 CPU
             if i % 20 == 0:
                 time.sleep(0.1)
 
             try:
-                # [优化点 3] 只有分析到当前这只股票时，才去数据库单独查它的历史数据
                 full_doc = self.collection.find_one({"_id": code}, {"qfq_history": 1, "latest_data": 1})
                 if full_doc:
                     full_doc["name"] = basic_doc.get("name")
@@ -229,17 +225,18 @@ class AnalysisService:
     def check_signals_and_notify(self):
         """
         检查所有长牛股的最新价格是否触发策略信号，并发送钉钉通知。
+        [修复] 修复了回溯逻辑中读取不存在列名导致的 Bug
         """
         logger.info("🔔 正在检查今日买卖信号...")
         
-        # 筛选出有长牛评级、有策略数据、且有历史数据的股票
         query = {
             "bull_label": {"$exists": True}, 
             "ma_strategy": {"$exists": True},
             "qfq_history": {"$exists": True, "$not": {"$size": 0}}
         }
-        # 限制历史数据返回数量，只取最近 100 天，减少内存消耗
-        cursor = self.collection.find(query, {"_id": 1, "name": 1, "bull_label": 1, "ma_strategy": 1, "qfq_history": {"$slice": -100}})
+        
+        # 获取最近 300 天数据，保证有足够数据计算 MA60 和回溯
+        cursor = self.collection.find(query, {"_id": 1, "name": 1, "bull_label": 1, "ma_strategy": 1, "qfq_history": {"$slice": -300}})
         
         buy_signals = []
         sell_signals = []
@@ -265,54 +262,96 @@ class AnalysisService:
                 df = df.dropna(subset=['close'])
                 if len(df) < 60: continue
                 
-                # 检查数据时效性（如果数据停留在5天前，则不发信号，避免误报旧数据）
+                # 检查数据时效性
                 latest = df.iloc[-1]
-                latest_date = pd.to_datetime(latest['date']).strftime("%Y-%m-%d")
-                if (datetime.now() - datetime.strptime(latest_date, "%Y-%m-%d")).days > 5:
+                latest_date_str = pd.to_datetime(latest['date']).strftime("%Y-%m-%d")
+                if (datetime.now() - datetime.strptime(latest_date_str, "%Y-%m-%d")).days > 5:
                     continue
 
-                # 计算指标
-                ma5 = df['close'].rolling(5).mean().iloc[-1]
-                ma60 = df['close'].rolling(60).mean().iloc[-1]
-                close = latest['close']
+                # === [关键修复] 先计算好 MA 列，供后续使用 ===
+                df['ma5'] = df['close'].rolling(5).mean()
+                df['ma60'] = df['close'].rolling(60).mean()
+
+                # === 计算辅助函数：回溯持续天数 ===
+                def get_duration_info(condition_func, ma_col_name):
+                    duration_days = 0
+                    start_date = latest_date_str
+                    
+                    # 从最后一天往回倒推
+                    for i in range(len(df) - 1, -1, -1):
+                        row = df.iloc[i]
+                        # 直接读取预计算好的 MA 值，修复 KeyError
+                        ma_val = df[ma_col_name].iloc[i]
+                        
+                        # 如果是早期数据导致 ma 为空，停止
+                        if pd.isna(ma_val): break
+                        
+                        curr_bias = (row['close'] - ma_val) / ma_val * 100
+                        
+                        if condition_func(curr_bias):
+                            duration_days += 1
+                            start_date = pd.to_datetime(row['date']).strftime("%Y-%m-%d")
+                        else:
+                            break
+                    return start_date, duration_days
+
+                # 获取最新指标
+                ma5_curr = df['ma5'].iloc[-1]
+                ma60_curr = df['ma60'].iloc[-1]
+                close = float(latest['close'])
                 
-                bias_5_pct = (close - ma5) / ma5 * 100
-                bias_60_pct = (close - ma60) / ma60 * 100
+                # 计算乖离率
+                bias_5_pct = (close - ma5_curr) / ma5_curr * 100
+                bias_60_pct = (close - ma60_curr) / ma60_curr * 100
                 
                 # --- 信号判定逻辑 ---
                 
-                # 1. 买入信号 (低于买入阈值)
+                # 1. 🟢 触发买入 (低于买入阈值)
                 if bias_60_pct <= buy_threshold_pct:
-                    buy_signals.append(f"**{name}** ({code}): 现偏离 {bias_60_pct:.2f}% (破 {buy_threshold_pct}%)")
+                    # 倒推计算持续时间
+                    s_date, days = get_duration_info(lambda b: b <= buy_threshold_pct, 'ma60')
+                    trigger_price = ma60_curr * (1 + buy_threshold_pct / 100)
+                    
+                    msg = (f"**{name} ({code})**: {s_date}触发买入，"
+                           f"买点价格为{trigger_price:.2f}元，当前股价{close:.2f}元，"
+                           f"已低于买点{days}天")
+                    buy_signals.append(msg)
                 
-                # 2. 接近买点 (进入缓冲带)
+                # 2. 📉 接近买点 (观察区)
                 elif (bias_60_pct - buy_threshold_pct) <= abs(buy_threshold_pct * DingTalkConfig.APPROACH_BUFFER):
-                    approach_buy_signals.append(f"{name} ({code}): 现偏离 {bias_60_pct:.2f}% (近 {buy_threshold_pct}%)")
+                    target_price = ma60_curr * (1 + buy_threshold_pct / 100)
+                    msg = (f"{name} ({code}): 当前股价{close:.2f}元，"
+                           f"接近买点{target_price:.2f}元 (还差 {(bias_60_pct - buy_threshold_pct):.2f}%)")
+                    approach_buy_signals.append(msg)
 
-                # 3. 卖出信号 (高于卖出阈值)
+                # 3. 🔴 触发卖出 (高于卖出阈值)
                 if bias_5_pct >= sell_threshold_pct:
-                    sell_signals.append(f"**{name}** ({code}): 现偏离 {bias_5_pct:.2f}% (破 {sell_threshold_pct}%)")
+                    s_date, days = get_duration_info(lambda b: b >= sell_threshold_pct, 'ma5')
+                    trigger_price = ma5_curr * (1 + sell_threshold_pct / 100)
+                    
+                    msg = (f"**{name} ({code})**: {s_date}触发卖点，"
+                           f"卖点价格为{trigger_price:.2f}元，当前股价{close:.2f}元，"
+                           f"已高于卖点{days}天")
+                    sell_signals.append(msg)
                 
-                # 4. 接近卖点
+                # 4. 📈 接近卖点
                 elif (sell_threshold_pct - bias_5_pct) <= abs(sell_threshold_pct * DingTalkConfig.APPROACH_BUFFER):
-                    approach_sell_signals.append(f"{name} ({code}): 现偏离 {bias_5_pct:.2f}% (近 {sell_threshold_pct}%)")
+                    target_price = ma5_curr * (1 + sell_threshold_pct / 100)
+                    msg = (f"{name} ({code}): 当前股价{close:.2f}元，"
+                           f"接近卖点{target_price:.2f}元 (还差 {(sell_threshold_pct - bias_5_pct):.2f}%)")
+                    approach_sell_signals.append(msg)
 
             except Exception as e:
                 logger.error(f"信号检查出错 {code}: {e}")
 
-        # === [修改] 发送通知逻辑 ===
-        # 如果有任何一种信号，则调用模板生成内容并发送
+        # 发送通知
         if any([buy_signals, sell_signals, approach_buy_signals, approach_sell_signals]):
-            
-            # 使用 Template 生成标准化的 Title 和 Markdown Body
             title, text = DingTalkTemplates.strategy_signal_report(
                 buy_signals, 
                 sell_signals, 
                 approach_buy_signals, 
                 approach_sell_signals
             )
-            
-            # 发送
             DingTalkService.send_markdown(title, text)
         else:
             logger.info("🔕 今日无重点信号触发")
@@ -331,7 +370,6 @@ class AnalysisService:
         
         if not qfq_data:
              try:
-                # 只有当数据真的没有时，才尝试联网补救
                 raw_df = ak.stock_hk_daily(symbol=code, adjust="qfq")
                 qfq_data = raw_df.to_dict('records') if raw_df is not None else []
              except: pass

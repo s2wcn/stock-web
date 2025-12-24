@@ -43,27 +43,30 @@ class DingTalkTemplates:
         # 2. 🟢 强力买入区域
         if buy_signals:
             content.append("\n### 🟢 触发买入")
-            # 使用引用样式 (>) 让列表更突出
-            content.extend([f"> {s}" for s in buy_signals])
+            # [修改] 使用无序列表 (-) 强制换行，让每条信息更清晰
+            for s in buy_signals:
+                content.append(f"- {s}")
 
         # 3. 🔴 强力卖出区域
         if sell_signals:
             content.append("\n### 🔴 触发卖出")
-            content.extend([f"> {s}" for s in sell_signals])
+            for s in sell_signals:
+                content.append(f"- {s}")
             
         # 4. 📉 接近买点 (观察区)
         if approach_buy:
             content.append("\n#### 📉 接近买点 (观察)")
-            content.extend([f"- {s}" for s in approach_buy]) # 使用普通列表
+            for s in approach_buy:
+                content.append(f"- {s}")
 
         # 5. 📈 接近卖点 (观察区)
         if approach_sell:
             content.append("\n#### 📈 接近卖点 (观察)")
-            content.extend([f"- {s}" for s in approach_sell])
+            for s in approach_sell:
+                content.append(f"- {s}")
             
         # 6. 底部签名
         content.append("\n---")
-        # 提示: 这里的 IP 需要根据实际服务器地址修改，或者读取配置
         content.append(f"###### 🤖 自动生成于 {cur_time}")
 
         return title, "\n".join(content)
