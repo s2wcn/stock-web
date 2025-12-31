@@ -14,12 +14,19 @@ from logger import analysis_logger as logger
 from services.notification_service import DingTalkService
 from message_templates import DingTalkTemplates 
 
-# === Numba 加速内核 ===
+# === 策略常量配置 (RSI 择时) ===
+RSI_PERIOD = 14
+RSI_BUY_THRESHOLD = 40.0       # 买入过滤：RSI必须处于弱势区 (防止接飞刀)
+RSI_SELL_THRESHOLD = 75.0      # 卖出增强：RSI进入超买区可降低卖出阈值
+RSI_SELL_BIAS_FACTOR = 0.8     # 如果 RSI 超买，卖出乖离率阈值打折系数 (例如原定10%卖，超买时8%就卖)
+
+# === Numba 加速内核 (已增加 RSI 逻辑) ===
 @jit(nopython=True)
 def backtest_numba(
     close_arr: np.ndarray, 
     bias5_arr: np.ndarray, 
-    bias60_arr: np.ndarray, 
+    bias60_arr: np.ndarray,
+    rsi_arr: np.ndarray,   # [新增] RSI 数组
     buy_bias_threshold: float, 
     sell_bias_threshold: float,
     commission: float,      
@@ -41,10 +48,16 @@ def backtest_numba(
 
         b5 = bias5_arr[i]
         b60 = bias60_arr[i]
+        current_rsi = rsi_arr[i]
         
         if in_market:
-            # 卖出
-            if b5 >= sell_bias_threshold:
+            # 卖出逻辑优化:
+            # 1. 乖离率完全达标 (标准止盈)
+            # 2. 或者: 乖离率达到阈值的 80% 且 RSI > 75 (超买提前止盈)
+            condition_normal = b5 >= sell_bias_threshold
+            condition_early = (b5 >= sell_bias_threshold * RSI_SELL_BIAS_FACTOR) and (current_rsi > RSI_SELL_THRESHOLD)
+            
+            if condition_normal or condition_early:
                 revenue = hold_shares * current_price * (1 - commission)
                 current_profit = revenue - (hold_shares * cost_price)
                 capital = revenue
@@ -53,8 +66,10 @@ def backtest_numba(
                 trade_count += 1
                 if current_profit > 0: win_count += 1
         else:
-            # 买入
-            if b60 <= buy_bias_threshold:
+            # 买入逻辑优化:
+            # 1. MA60 乖离率达标 (价格足够便宜)
+            # 2. 且 RSI < 40 (确认处于相对底部/弱势区，而非急跌中继)
+            if b60 <= buy_bias_threshold and current_rsi < RSI_BUY_THRESHOLD:
                 cost_after_fee = current_price * (1 + commission)
                 hold_shares = capital / cost_after_fee
                 cost_price = current_price
@@ -95,6 +110,19 @@ def _worker_optimize_stock(doc_data: Dict) -> Optional[Tuple[str, str, Dict]]:
         df['ma_short'] = close_series.rolling(window=StrategyConfig.MA_SHORT_WINDOW).mean()
         df['ma_long'] = close_series.rolling(window=StrategyConfig.MA_LONG_WINDOW).mean()
         
+        # [新增] 计算 RSI 指标 (使用 Wilder's Smoothing / EWM 算法)
+        delta = close_series.diff()
+        up = delta.clip(lower=0)
+        down = -1 * delta.clip(upper=0)
+        
+        # 使用 EWM (com = period - 1) 模拟 Wilder's Smoothing，对齐主流软件
+        ma_up = up.ewm(com=RSI_PERIOD - 1, adjust=False).mean()
+        ma_down = down.ewm(com=RSI_PERIOD - 1, adjust=False).mean()
+        
+        rs = ma_up / ma_down
+        df['rsi'] = 100 - (100 / (1 + rs))
+        df['rsi'] = df['rsi'].fillna(50) # 填充 NaN
+
         with np.errstate(divide='ignore', invalid='ignore'):
             df['bias_short'] = (close_series - df['ma_short']) / df['ma_short']
             df['bias_long'] = (close_series - df['ma_long']) / df['ma_long']
@@ -111,12 +139,14 @@ def _worker_optimize_stock(doc_data: Dict) -> Optional[Tuple[str, str, Dict]]:
         else: benchmark_cost = df.iloc[start_idx]['open']
 
         df_slice = df.iloc[start_idx:].copy().reset_index(drop=True)
-        df_slice.dropna(subset=['ma_long', 'bias_short', 'bias_long'], inplace=True)
+        # 确保关键列无 NaN
+        df_slice.dropna(subset=['ma_long', 'bias_short', 'bias_long', 'rsi'], inplace=True)
         if df_slice.empty: return None
 
         close_arr = df_slice['close'].astype(float).values
         bias_short_arr = df_slice['bias_short'].astype(float).values
         bias_long_arr = df_slice['bias_long'].astype(float).values
+        rsi_arr = df_slice['rsi'].astype(float).values # [新增]
 
         benchmark_return = 0.0
         if benchmark_cost > 0.0001:
@@ -134,8 +164,10 @@ def _worker_optimize_stock(doc_data: Dict) -> Optional[Tuple[str, str, Dict]]:
 
         for b in buy_range:
             for s in sell_range:
+                # [修改] 传递 rsi_arr
                 ret, trades, wins = backtest_numba(
-                    close_arr, bias_short_arr, bias_long_arr, float(b), float(s),
+                    close_arr, bias_short_arr, bias_long_arr, rsi_arr,
+                    float(b), float(s),
                     StrategyConfig.STRAT_COMMISSION,
                     StrategyConfig.STRAT_INITIAL_CAPITAL
                 )
@@ -200,7 +232,7 @@ class AnalysisService:
         logger.info("✅ Service: 趋势分析阶段完成")
 
     def optimize_strategies(self):
-        logger.info("🚀 Service: 开始对长牛股进行【策略参数优化】...")
+        logger.info("🚀 Service: 开始对长牛股进行【策略参数优化 (含RSI)】...")
         
         target_stocks = list(self.collection.find({"bull_label": {"$exists": True}}))
         
@@ -225,9 +257,9 @@ class AnalysisService:
     def check_signals_and_notify(self):
         """
         检查所有长牛股的最新价格是否触发策略信号，并发送钉钉通知。
-        [修复] 修复了回溯逻辑中读取不存在列名导致的 Bug
+        [更新] 引入 RSI 辅助判断 (算法已对齐主流软件)
         """
-        logger.info("🔔 正在检查今日买卖信号...")
+        logger.info("🔔 正在检查今日买卖信号 (Enhanced with RSI)...")
         
         query = {
             "bull_label": {"$exists": True}, 
@@ -235,7 +267,7 @@ class AnalysisService:
             "qfq_history": {"$exists": True, "$not": {"$size": 0}}
         }
         
-        # 获取最近 300 天数据，保证有足够数据计算 MA60 和回溯
+        # 获取最近 300 天数据
         cursor = self.collection.find(query, {"_id": 1, "name": 1, "bull_label": 1, "ma_strategy": 1, "qfq_history": {"$slice": -300}})
         
         buy_signals = []
@@ -262,83 +294,104 @@ class AnalysisService:
                 df = df.dropna(subset=['close'])
                 if len(df) < 60: continue
                 
-                # 检查数据时效性
                 latest = df.iloc[-1]
                 latest_date_str = pd.to_datetime(latest['date']).strftime("%Y-%m-%d")
                 if (datetime.now() - datetime.strptime(latest_date_str, "%Y-%m-%d")).days > 5:
                     continue
 
-                # === [关键修复] 先计算好 MA 列，供后续使用 ===
+                # === 计算指标 ===
                 df['ma5'] = df['close'].rolling(5).mean()
                 df['ma60'] = df['close'].rolling(60).mean()
 
-                # === 计算辅助函数：回溯持续天数 ===
-                def get_duration_info(condition_func, ma_col_name):
+                # [新增] 计算 RSI (使用 EWM 对齐股票软件)
+                delta = df['close'].diff()
+                up = delta.clip(lower=0)
+                down = -1 * delta.clip(upper=0)
+                
+                # 修正: 使用 ewm(com=13) 
+                ma_up = up.ewm(com=RSI_PERIOD - 1, adjust=False).mean()
+                ma_down = down.ewm(com=RSI_PERIOD - 1, adjust=False).mean()
+                
+                rs = ma_up / ma_down
+                df['rsi'] = 100 - (100 / (1 + rs))
+                df['rsi'] = df['rsi'].fillna(50)
+
+                # === 计算辅助函数：回溯持续天数 (考虑 RSI) ===
+                def get_duration_info(check_func):
                     duration_days = 0
                     start_date = latest_date_str
                     
-                    # 从最后一天往回倒推
                     for i in range(len(df) - 1, -1, -1):
                         row = df.iloc[i]
-                        # 直接读取预计算好的 MA 值，修复 KeyError
-                        ma_val = df[ma_col_name].iloc[i]
+                        ma5_val = df['ma5'].iloc[i]
+                        ma60_val = df['ma60'].iloc[i]
+                        rsi_val = df['rsi'].iloc[i]
                         
-                        # 如果是早期数据导致 ma 为空，停止
-                        if pd.isna(ma_val): break
+                        if pd.isna(ma5_val) or pd.isna(ma60_val): break
                         
-                        curr_bias = (row['close'] - ma_val) / ma_val * 100
+                        curr_bias_5 = (row['close'] - ma5_val) / ma5_val * 100
+                        curr_bias_60 = (row['close'] - ma60_val) / ma60_val * 100
                         
-                        if condition_func(curr_bias):
+                        if check_func(curr_bias_5, curr_bias_60, rsi_val):
                             duration_days += 1
                             start_date = pd.to_datetime(row['date']).strftime("%Y-%m-%d")
                         else:
                             break
                     return start_date, duration_days
 
-                # 获取最新指标
+                # 获取最新数据
                 ma5_curr = df['ma5'].iloc[-1]
                 ma60_curr = df['ma60'].iloc[-1]
+                rsi_curr = df['rsi'].iloc[-1]
                 close = float(latest['close'])
                 
-                # 计算乖离率
                 bias_5_pct = (close - ma5_curr) / ma5_curr * 100
                 bias_60_pct = (close - ma60_curr) / ma60_curr * 100
                 
-                # --- 信号判定逻辑 ---
+                # --- 信号判定逻辑 (同步 backtest 逻辑) ---
                 
-                # 1. 🟢 触发买入 (低于买入阈值)
-                if bias_60_pct <= buy_threshold_pct:
-                    # 倒推计算持续时间
-                    s_date, days = get_duration_info(lambda b: b <= buy_threshold_pct, 'ma60')
+                # 1. 🟢 触发买入
+                # 逻辑: 乖离率 <= 阈值 且 RSI < 40
+                if bias_60_pct <= buy_threshold_pct and rsi_curr < RSI_BUY_THRESHOLD:
+                    s_date, days = get_duration_info(
+                        lambda b5, b60, r: b60 <= buy_threshold_pct and r < RSI_BUY_THRESHOLD
+                    )
                     trigger_price = ma60_curr * (1 + buy_threshold_pct / 100)
                     
-                    msg = (f"**{name} ({code})**: {s_date}触发买入，"
-                           f"买点价格为{trigger_price:.2f}元，当前股价{close:.2f}元，"
-                           f"已低于买点{days}天")
+                    msg = (f"**{name} ({code})**: {s_date}触发买入\n"
+                           f"  - 现价: {close:.2f} (触发价 {trigger_price:.2f})\n"
+                           f"  - RSI: {rsi_curr:.1f} (<{RSI_BUY_THRESHOLD})\n"
+                           f"  - 持续: {days}天")
                     buy_signals.append(msg)
                 
-                # 2. 📉 接近买点 (观察区)
+                # 2. 📉 接近买点 (观察区) - 不强制 RSI 过滤，仅提示
                 elif (bias_60_pct - buy_threshold_pct) <= abs(buy_threshold_pct * DingTalkConfig.APPROACH_BUFFER):
                     target_price = ma60_curr * (1 + buy_threshold_pct / 100)
-                    msg = (f"{name} ({code}): 当前股价{close:.2f}元，"
-                           f"接近买点{target_price:.2f}元 (还差 {(bias_60_pct - buy_threshold_pct):.2f}%)")
+                    msg = (f"{name} ({code}): 现价{close:.2f} 接近买点:{target_price:.2f} (RSI: {rsi_curr:.1f})")
                     approach_buy_signals.append(msg)
 
-                # 3. 🔴 触发卖出 (高于卖出阈值)
-                if bias_5_pct >= sell_threshold_pct:
-                    s_date, days = get_duration_info(lambda b: b >= sell_threshold_pct, 'ma5')
+                # 3. 🔴 触发卖出
+                # 逻辑: 乖离率 >= 阈值 OR (乖离率 >= 0.8*阈值 且 RSI > 75)
+                cond_sell_normal = bias_5_pct >= sell_threshold_pct
+                cond_sell_early = (bias_5_pct >= sell_threshold_pct * RSI_SELL_BIAS_FACTOR) and (rsi_curr > RSI_SELL_THRESHOLD)
+
+                if cond_sell_normal or cond_sell_early:
+                    s_date, days = get_duration_info(
+                        lambda b5, b60, r: (b5 >= sell_threshold_pct) or ((b5 >= sell_threshold_pct * RSI_SELL_BIAS_FACTOR) and (r > RSI_SELL_THRESHOLD))
+                    )
+                    
+                    reason = "标准止盈" if cond_sell_normal else f"RSI超买({rsi_curr:.1f})提前止盈"
                     trigger_price = ma5_curr * (1 + sell_threshold_pct / 100)
                     
-                    msg = (f"**{name} ({code})**: {s_date}触发卖点，"
-                           f"卖点价格为{trigger_price:.2f}元，当前股价{close:.2f}元，"
-                           f"已高于卖点{days}天")
+                    msg = (f"**{name} ({code})**: {s_date}触发卖出 [{reason}]\n"
+                           f"  - 现价: {close:.2f}\n"
+                           f"  - 持续: {days}天")
                     sell_signals.append(msg)
                 
                 # 4. 📈 接近卖点
                 elif (sell_threshold_pct - bias_5_pct) <= abs(sell_threshold_pct * DingTalkConfig.APPROACH_BUFFER):
                     target_price = ma5_curr * (1 + sell_threshold_pct / 100)
-                    msg = (f"{name} ({code}): 当前股价{close:.2f}元，"
-                           f"接近卖点{target_price:.2f}元 (还差 {(sell_threshold_pct - bias_5_pct):.2f}%)")
+                    msg = (f"{name} ({code}): 现价{close:.2f} 接近卖点:{target_price:.2f} (RSI: {rsi_curr:.1f})")
                     approach_sell_signals.append(msg)
 
             except Exception as e:
